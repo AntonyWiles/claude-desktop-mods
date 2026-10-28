@@ -11,6 +11,19 @@ holding five features that each switch on or off:
 | **Next steps** | After each turn, up to three suggested next prompts above the input: press 1, 2 or 3 to put one in the prompt box, 0 to dismiss. From Thariq Shihipar's [next-steps](https://github.com/anthropics/claude-plugins-community/tree/main/next-steps) plugin. | `nextSteps`, `minAnswerChars`, `suggestSkills` |
 | **Session archive** | Saves every session's conversation as it happens to `%USERPROFILE%\claude-session-archive\<session id>\`: `meta.json` (folder, model, start time) and `rows-NNNN.jsonl`, one line per prompt, response, tool call and result, subagents' included. Long text is cut at 20,000 characters and images are left out. `/archive` shows where the current session goes. For reading back later, to turn repeated work into skills. `tools\clean-archive.py` boils it down for spotting where tokens go; see [Cleaning the archive](#cleaning-the-archive). | `sessionArchive` |
 
+And five skills for spending fewer tokens and less time, which Claude picks up in every project
+(as `desktop-mods:<name>`). Each comes from a pattern in the session archive:
+
+| Skill | What it does |
+| --- | --- |
+| **check-changed** | One command to check your work: formats, lints, typechecks and runs the related tests for the files changed since the last commit, printing only what failed. Finds the project's own tools (prettier or biome, eslint, tsc, vitest or jest; ruff or black, mypy, pytest), or runs the project's own `npm run check:changed` when it has one. Replaces four or five separate runs, each re-reading the whole conversation. |
+| **plan-step** | Runs exactly one step of a plan written by plan-proposal (`docs/plans/<plan>/prompts/NN-*.md`): reads only what the step needs, does it, checks it, writes its report, commits, and stops, offering the next step as a fresh session, on a cheaper model when it is routine. |
+| **fresh-start** | Writes a one-page `.claude/handoff.md` (goal, done, state, next, key files, decisions) and hands the work to a fresh session, so a long conversation stops being re-read on every call. |
+| **file-outline** | Lists a large file's functions, classes, components, types or headings with their line ranges, so only the needed range gets read. |
+| **usage-review** | Tokens and API cost of this session request by request, or of a project or every project over some days, with where the tokens went, from the session archive. |
+
+The scripts are Python 3.9+ with no packages, in `skills\<name>\`.
+
 Two features are other people's work, brought in here under the MIT licence: the usage meter is
 Rohit's [usage-meter](https://github.com/rohit3a/usage-meter), and next steps is Thariq Shihipar's
 [next-steps](https://github.com/anthropics/claude-plugins-community/tree/main/next-steps). Thanks to both; see [Credits and licence](#credits-and-licence).
@@ -131,6 +144,7 @@ which were most of its rows.
 hooks/register.tsx     the one hooks module: chains every feature's hooks per event
 hooks/band.tsx         the band above the prompt: every feature's rows under a labelled gutter
 hooks/features/        context-ring, git-bar, next-steps, usage-meter, session-archive
+skills/                check-changed, plan-step, fresh-start, file-outline, usage-review
 hooks/hook-types.ts    parameter types for hooks written as function declarations
 types/index.d.ts       the $.state contract for every feature
 collector/             the usage meter's collector (Python), prices.json beside it

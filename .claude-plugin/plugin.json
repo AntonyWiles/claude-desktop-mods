@@ -1,7 +1,7 @@
 {
   "name": "desktop-mods",
   "version": "1.0.1",
-  "description": "Antony's Claude Code Desktop mods in one: context ring in the prompt footer, git Commit/Push bar, usage meter, next-step suggestions, and a local archive of every session.",
+  "description": "Antony's Claude Code Desktop mods in one: context ring in the prompt footer, git Commit/Push bar, usage meter, next-step suggestions, a local archive of every session, and skills for spending fewer tokens (check-changed, plan-step, fresh-start, file-outline, usage-review).",
   "author": { "name": "AntonyWiles", "url": "https://github.com/AntonyWiles" },
   "repository": "https://github.com/AntonyWiles/claude-desktop-mods",
   "license": "MIT",

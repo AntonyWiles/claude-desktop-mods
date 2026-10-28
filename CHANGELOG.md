@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- New: five skills for spending fewer tokens and less time, in every project. `check-changed`
+  checks the changed files in one command, failures only. `plan-step` runs one plan step and stops.
+  `fresh-start` writes a handoff and moves to a fresh session. `file-outline` gives a large file's
+  outline with line ranges. `usage-review` shows a session's or project's tokens and API cost.
 - Fix: the band stayed hidden after most turns on the desktop, whose end-of-turn box (recap,
   question, buttons) counts as a survey. The band now draws under it, without the next-step rows.
 - New: the session archive. Every session's conversation is saved as it happens to
