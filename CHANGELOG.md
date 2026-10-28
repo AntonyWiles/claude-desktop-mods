@@ -7,6 +7,9 @@
 - New: the session archive. Every session's conversation is saved as it happens to
   `%USERPROFILE%\claude-session-archive\<session id>\` (`meta.json` and `rows-NNNN.jsonl`),
   for turning repeated work into skills later. `/archive` shows where; `sessionArchive` turns it off.
+- New: `tools\clean-archive.py` boils the archive down (about a tenth of the size) to prompts,
+  replies, one-line tool calls, result sizes, token readings, and a per-session index and report
+  for spotting where tokens go. Empty bookkeeping rows are no longer archived.
 - New band layout: the full-width `── usage` / `── git` rules are gone. Each feature's rows sit
   beside a short dim label in a gutter (`usage │`, `git │`, `next │`), and the context ring closes
   the first row instead of taking one of its own.

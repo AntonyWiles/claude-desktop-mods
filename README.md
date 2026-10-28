@@ -9,7 +9,7 @@ holding five features that each switch on or off:
 | **Git bar** | Commit (Haiku writes the message) and Push buttons, branch picker and diff count above the prompt. | `gitBar` |
 | **Usage meter** | Plan-limit %, tokens and API-equivalent $ in the band above the prompt, and the `/burn` pane. Needs its collector (installed by `deploy\install.ps1`). From [rohit3a/usage-meter](https://github.com/rohit3a/usage-meter). | `usageMeter` |
 | **Next steps** | After each turn, up to three suggested next prompts above the input: press 1, 2 or 3 to put one in the prompt box, 0 to dismiss. From Thariq Shihipar's [next-steps](https://github.com/anthropics/claude-plugins-community/tree/main/next-steps) plugin. | `nextSteps`, `minAnswerChars`, `suggestSkills` |
-| **Session archive** | Saves every session's conversation as it happens to `%USERPROFILE%\claude-session-archive\<session id>\`: `meta.json` (folder, model, start time) and `rows-NNNN.jsonl`, one line per prompt, response, tool call and result, subagents' included. Long text is cut at 20,000 characters and images are left out. `/archive` shows where the current session goes. For reading back later, to turn repeated work into skills. | `sessionArchive` |
+| **Session archive** | Saves every session's conversation as it happens to `%USERPROFILE%\claude-session-archive\<session id>\`: `meta.json` (folder, model, start time) and `rows-NNNN.jsonl`, one line per prompt, response, tool call and result, subagents' included. Long text is cut at 20,000 characters and images are left out. `/archive` shows where the current session goes. For reading back later, to turn repeated work into skills. `tools\clean-archive.py` boils it down for spotting where tokens go; see [Cleaning the archive](#cleaning-the-archive). | `sessionArchive` |
 
 Two features are other people's work, brought in here under the MIT licence: the usage meter is
 Rohit's [usage-meter](https://github.com/rohit3a/usage-meter), and next steps is Thariq Shihipar's
@@ -83,6 +83,35 @@ claude plugin configure desktop-mods@claude-desktop-mods          # show them
 - **From GitHub:** re-run the install line; it runs `claude plugin update` and refreshes the collector.
 - `claude plugin list` shows the installed version.
 
+## Cleaning the archive
+
+The raw archive grows fast, mostly with tool output, file bodies and system reminders.
+`tools\clean-archive.py` (Python 3.9+, no packages) keeps the shape of the work and drops the bulk:
+
+```
+python tools\clean-archive.py
+```
+
+It writes `%USERPROFILE%\claude-session-archive-clean\`:
+
+- `sessions\<session id>.jsonl`: one line per event, with its time. Prompts and slash commands in
+  full, Claude's replies (cut at 2,000 characters), each tool call as a short summary (the command,
+  the file, the pattern), each result's size and whether it failed, questions asked and their
+  answers, compactions, subagents, and the `tokens left` readings, so a stretch of work's cost can
+  be read off.
+- `index.jsonl`: one line per session: folder, model, times, prompt and tool counts, tokens used,
+  tool output and input sizes by tool, reminder and hook-context sizes by kind, and the files and
+  commands it went back to again and again.
+- `report.md`: the same totals across every session, biggest first.
+
+Run it again whenever you like: sessions unchanged since the last run are skipped. It only reads the
+raw archive. To reclaim the space, `--delete-raw` deletes the `rows-*.jsonl` of sessions that are
+cleaned and have been idle `--older-than` days (14 by default); `meta.json` stays. Deleted rows
+can't be cleaned again later, so keep them until you're happy with what the cleaned copy keeps.
+
+The archive itself no longer records empty bookkeeping rows (hook successes, stop-hook summaries),
+which were most of its rows.
+
 ## Layout
 
 ```
@@ -95,7 +124,7 @@ types/index.d.ts       the $.state contract for every feature
 collector/             the usage meter's collector (Python), prices.json beside it
 deploy/                install.ps1, uninstall.ps1, run_hidden.pyw
 scripts/push.ps1       the git bar's push
-tools/                 check.ps1, package.ps1, release.ps1
+tools/                 check.ps1, package.ps1, release.ps1, clean-archive.py
 tests/                 claude plugin test suites, one per feature plus a combined one
 ```
 

@@ -86,6 +86,22 @@ test('long text is cut and the queue’s copy of a prompt is skipped', ONLY, asy
   expect(kept[0].content[0].text).toContain('10000 more characters cut')
 })
 
+test('empty bookkeeping rows are not archived', ONLY, async ($, on) => {
+  const files = world(on)
+  await $.session.start({ cwd: 'C:/repo', surface: 'desktop', isInteractive: true })
+  await $.session.append({
+    door: 'hook-context', origin: { kind: 'hook', event: 'PostToolUse' }, uuid: 'h1',
+    message: { type: 'attachment', name: 'hook_success', content: [] },
+  } as never)
+  await $.session.append({
+    door: 'notice', origin: { kind: 'engine' }, uuid: 'n1',
+    message: { type: 'system', name: 'stop_hook_summary', content: [] },
+  } as never)
+  await $.session.append(prompt('u1', 'hello'))
+
+  expect(rows(files).map(r => r.uuid)).toEqual(['u1'])
+})
+
 test('after a reload it carries on in the newest part', ONLY, async ($, on) => {
   const files = new Map([
     [`${FOLDER}/meta.json`, '{}'],

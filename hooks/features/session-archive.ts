@@ -134,11 +134,20 @@ export async function sessionStart($: EngineInterface, e: In<'session.start'>, n
   return next(e)
 }
 
+// Hook successes, tool-list records and stop-hook summaries with nothing in
+// them: most of the archive's rows, and none of its information.
+function isEmptyBookkeeping(e: In<'session.append'>): boolean {
+  const { type, content } = e.message
+  return (type === 'attachment' || type === 'system') && Array.isArray(content) && content.length === 0
+}
+
 // Stored first, then archived. Writes run one at a time so a part never
 // interleaves, and a failed write never holds up the conversation.
 export async function sessionAppend($: EngineInterface, e: In<'session.append'>, next: NextOf<'session.append'>) {
   const stored = await next(e)
   if (e.door === 'queue') return stored // the queue's copy of a prompt row
+  if (isEmptyBookkeeping(e)) return stored
+
   const sessionId = await $.session.id()
   const write = queue.then(() => record($, e, sessionId))
   queue = write.catch(() => undefined)
