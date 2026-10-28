@@ -21,13 +21,14 @@ Writes to %USERPROFILE%\\claude-session-archive-clean\\:
                                 and tool counts, result sizes by tool, tokens
                                 used, files read again and commands run again
   report.md                     totals across every session, biggest first
+  report-<folder>.md            with --folder: the same for one project only
 
 Sessions already cleaned and unchanged since are skipped. The raw archive is
 left alone unless --delete-raw is given, which removes the rows files (never
 meta.json) of sessions cleaned and idle for --older-than days (default 14).
 
   python tools\\clean-archive.py [--archive DIR] [--out DIR] [--all]
-                                 [--delete-raw] [--older-than DAYS]
+                                 [--folder DIR] [--delete-raw] [--older-than DAYS]
 Python 3.9+, standard library only.
 """
 from __future__ import annotations
@@ -261,7 +262,14 @@ def write_atomic(path: str, text: str):
     os.replace(tmp, path)
 
 
-def report(index: list[dict]) -> str:
+def in_folder(cwd: str | None, folder: str) -> bool:
+    """Whether a session ran in folder or below it, however its path is spelt."""
+    norm = lambda path: os.path.normcase(os.path.normpath(path)).rstrip("\\/")
+    here, want = norm(cwd or ""), norm(folder)
+    return here == want or here.startswith(want + os.sep)
+
+
+def report(index: list[dict], title: str = "Session archive report") -> str:
     total = collections.Counter
     calls, results, inputs, overhead, errors, folders = total(), total(), total(), total(), total(), total()
     tokens_by_folder, targets = total(), total()
@@ -280,7 +288,7 @@ def report(index: list[dict]) -> str:
 
     biggest = sorted(index, key=lambda s: s.get("tokensUsed") or 0, reverse=True)[:15]
     lines = [
-        "# Session archive report", "",
+        f"# {title}", "",
         f"{len(index)} sessions, {sum(s['prompts'] for s in index):,} prompts, "
         f"{sum(calls.values()):,} tool calls, {sum(s['compactions'] for s in index)} compactions. "
         "Sizes are characters (about 4 to a token).", "",
@@ -314,6 +322,8 @@ def main(argv=None) -> int:
     p.add_argument("--delete-raw", action="store_true",
                    help="after cleaning, delete the raw rows of sessions idle for --older-than days")
     p.add_argument("--older-than", type=float, default=14, metavar="DAYS")
+    p.add_argument("--folder", metavar="DIR",
+                   help="also write report-<folder>.md, counting only sessions run in DIR or below it")
     args = p.parse_args(argv)
 
     if not os.path.isdir(args.archive):
@@ -364,6 +374,12 @@ def main(argv=None) -> int:
     ordered = sorted(index.values(), key=lambda s: s.get("startedAt") or "")
     write_atomic(index_path, "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in ordered))
     write_atomic(os.path.join(args.out, "report.md"), report(ordered))
+    if args.folder:
+        mine = [s for s in ordered if in_folder(s.get("cwd"), args.folder)]
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(os.path.normpath(args.folder))) or "folder"
+        path = os.path.join(args.out, f"report-{name}.md")
+        write_atomic(path, report(mine, f"Session archive report: {os.path.normpath(args.folder)}"))
+        print(f"{len(mine)} sessions in {args.folder}: {path}")
 
     print(f"Cleaned {cleaned} sessions ({raw_bytes / 1e6:.1f} MB raw -> {clean_bytes / 1e6:.1f} MB), "
           f"{skipped} unchanged. Output: {args.out}")

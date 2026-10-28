@@ -103,6 +103,8 @@ It writes `%USERPROFILE%\claude-session-archive-clean\`:
   tool output and input sizes by tool, reminder and hook-context sizes by kind, and the files and
   commands it went back to again and again.
 - `report.md`: the same totals across every session, biggest first.
+- `report-<folder>.md`: with `--folder C:\path\to\project`, the same report counting only the
+  sessions run in that folder or below it.
 
 Run it again whenever you like: sessions unchanged since the last run are skipped. It only reads the
 raw archive. To reclaim the space, `--delete-raw` deletes the `rows-*.jsonl` of sessions that are
