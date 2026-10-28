@@ -19,7 +19,7 @@ saving in a long piece of work.
 
 Offer it in one line ("This is a good point for a fresh session: shall I write a handoff?"), unless
 they asked for it, in which case just do it. Don't hand over in the middle of a change that leaves
-the code broken: finish or back out to a working state first.
+the code broken: finish the step in progress first. Never undo or revert work to reach a clean point: that wastes the tokens the handoff is meant to save.
 
 ## Write the handoff
 

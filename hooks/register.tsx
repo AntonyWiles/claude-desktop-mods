@@ -27,6 +27,13 @@ import {
   turnStart as nextTurnStart,
 } from './features/next-steps'
 import {
+  configure as configureHandoff,
+  promptSubmit as handoffPromptSubmit,
+  sessionMeasure as handoffSessionMeasure,
+  sessionStart as handoffSessionStart,
+  toolCall as handoffToolCall,
+} from './features/handoff-nudge'
+import {
   runArchive,
   sessionAppend as archiveSessionAppend,
   sessionStart as archiveSessionStart,
@@ -45,7 +52,7 @@ import {
   turnStep as usageTurnStep,
 } from './features/usage-meter'
 
-// One mod, five features, each switched on or off in the mod's options (the
+// One mod, six features, each switched on or off in the mod's options (the
 // config menu, or `pluginConfigs` in settings); a change reloads the module.
 //
 // A module hooks each event once, so where several features hook the same
@@ -62,12 +69,15 @@ export const register: Register = (on, options) => {
   const usage = isOn('usageMeter')
   const steps = isOn('nextSteps')
   const archive = isOn('sessionArchive')
+  const handoff = isOn('handoffNudge')
 
   configureRing(options)
   configureNext(options)
+  configureHandoff(options)
 
   on('session.start', ($, e, next) => {
-    const toRing = (ev: typeof e) => (ring ? ringSessionStart($, ev, next) : next(ev))
+    const toHandoff = (ev: typeof e) => (handoff ? handoffSessionStart($, ev, next) : next(ev))
+    const toRing = (ev: typeof e) => (ring ? ringSessionStart($, ev, toHandoff as never) : toHandoff(ev))
     const toUsage = (ev: typeof e) => (usage ? usageSessionStart($, ev, toRing as never) : toRing(ev))
     const toGit = (ev: typeof e) => (git ? gitSessionStart($, ev, toUsage as never) : toUsage(ev))
 
@@ -81,7 +91,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', ($, e, next) => {
-    const toRing = (ev: typeof e) => (ring ? ringSessionMeasure($, ev, next) : next(ev))
+    const toHandoff = (ev: typeof e) => (handoff ? handoffSessionMeasure($, ev, next) : next(ev))
+    const toRing = (ev: typeof e) => (ring ? ringSessionMeasure($, ev, toHandoff as never) : toHandoff(ev))
 
     return usage ? usageSessionMeasure($, e, toRing as never) : toRing(e)
   })
@@ -109,10 +120,13 @@ export const register: Register = (on, options) => {
   on('agent.spawn', ($, e, next) => (usage ? usageAgentSpawn($, e, next) : next(e)))
 
   on('tool.call', ($, e, next) => {
-    const toUsage = (ev: typeof e) => (usage && ev.tool === 'Bash' ? usageToolCallBash($, ev as never, next as never) : next(ev))
+    const toHandoff = (ev: typeof e) => (handoff ? handoffToolCall($, ev, next) : next(ev))
+    const toUsage = (ev: typeof e) => (usage && ev.tool === 'Bash' ? usageToolCallBash($, ev as never, toHandoff as never) : toHandoff(ev))
 
     return git ? gitToolCall($, e, toUsage as never) : toUsage(e)
   })
+
+  on('prompt.submit', ($, e, next) => (handoff ? handoffPromptSubmit($, e, next) : next(e)))
 
   on('turn.step', async function* ($, e, next) {
     return usage ? yield* usageTurnStep($, e, next) : yield* next(e)
