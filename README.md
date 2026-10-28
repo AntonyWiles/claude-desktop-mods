@@ -116,7 +116,10 @@ It writes `%USERPROFILE%\claude-session-archive-clean\`:
   hook-context sizes by kind, and the files and commands it went back to again and again.
 - `report.md`: totals across every session, biggest first: cost by model and by folder, the
   sessions and requests that cost the most, and where the tokens went.
-- `requests.md`: every session, newest first, and every request in it, with its tokens and cost.
+- `requests.md`: every session, newest first, and every request in it, with its tokens, cost,
+  effort level and run time.
+- `usage\<session id>.jsonl`: every API call's tokens, model and effort, kept here because Claude
+  Code deletes old transcripts (after 30 days by default); a session's numbers outlive them.
 - `report-<folder>.md` and `requests-<folder>.md`: with `--folder C:\path\to\project`, the same
   counting only the sessions run in that folder or below it.
 
@@ -127,7 +130,12 @@ Cost is at today's API list prices from `prices.json` (the same file the usage m
 each call priced as the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.1.
 Each session also shows what the same tokens would have cost on each of those four. On a plan
 these are what the work would cost on the API, not what you pay. A session whose transcript has
-been deleted has no tokens or cost.
+been deleted, and was never cleaned before that, has no tokens or cost.
+
+Effort is the level each call ran at (low to max; it can change mid-session), shown per session
+and request, with subagents' effort beside the session's own (`low, agents medium`). `report.md`
+breaks cost down by model and effort, with the cost per call of each. Run time is from the first
+API call to the last; "working" leaves out gaps of over five minutes.
 
 Run it again whenever you like: sessions unchanged since the last run are skipped. It only reads the
 raw archive. To reclaim the space, `--delete-raw` deletes the `rows-*.jsonl` of sessions that are

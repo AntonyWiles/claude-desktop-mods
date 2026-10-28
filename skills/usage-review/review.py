@@ -45,6 +45,19 @@ def when(at) -> str:
         return "?"
 
 
+def minutes(m) -> str:
+    if m is None:
+        return "?"
+    return f"{int(m // 60)}h {int(m % 60):02d}m" if m >= 60 else f"{m:.0f}m" if m >= 1 else "<1m"
+
+
+def effort(u: dict) -> str:
+    own, agents = u.get("effort"), u.get("agentEffort")
+    if agents and agents != own:
+        return f"{own or '?'}, agents {agents}" if own else f"agents {agents}"
+    return own or agents or "?"
+
+
 def one_line(text, n=70) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -65,7 +78,8 @@ def chars(n) -> str:
 def session_view(s: dict) -> list[str]:
     u = s.get("usage") or {}
     rows = [f"Session {s['sessionId'][:8]} in {s.get('cwd')}, started {when(s.get('startedAt'))}, "
-            f"{s.get('minutes')} min, {s.get('model')}",
+            f"ran {minutes(u.get('runMinutes'))} (working {minutes(u.get('workingMinutes'))}), "
+            f"{s.get('model')} at {effort(u)} effort",
             f"{tokens(u.get('tokens'))} tokens ({tokens(u.get('cacheRead'))} cache reads, "
             f"{tokens(u.get('output'))} output) in {u.get('calls', 0)} API calls: {usd(u.get('usd'))} at API prices"]
     if u.get("usdOn"):
@@ -79,7 +93,7 @@ def session_view(s: dict) -> list[str]:
                 rows.append(f"  ... {len(reqs) - 14} more")
                 continue
             rows.append(f"  {when(r['at'])}  {tokens(r['tokens']):>8}  {usd(r['usd']):>8}  {r['calls']:>4} calls  "
-                        f"{one_line(r['prompt'], 60)}")
+                        f"{minutes(r.get('minutes')):>7}  {effort(r):<8}  {one_line(r['prompt'], 50)}")
     rows += ["", "Tool output read back: " + top(collections.Counter(s.get("resultChars")), 4, chars),
              "Tool calls: " + top(collections.Counter(s.get("toolCalls")), 5)]
     if s.get("repeated"):
@@ -96,7 +110,7 @@ def period_view(sessions: list[dict], label: str) -> list[str]:
     by_model, on, results, overhead, repeats = (collections.Counter() for _ in range(5))
     reqs = []
     for s in used:
-        for m, t in (s["usage"].get("byModel") or {}).items():
+        for m, t in (s["usage"].get("byModelEffort") or s["usage"].get("byModel") or {}).items():
             by_model[m] += t["usd"]
         on.update(s["usage"].get("usdOn") or {})
         results.update(s.get("resultChars") or {})
@@ -105,12 +119,13 @@ def period_view(sessions: list[dict], label: str) -> list[str]:
             repeats[f"{r['tool']} {one_line(os.path.basename(r['target']) if r['tool'] in ('Read', 'Edit', 'Write') else r['target'], 40)}"] += r["times"]
         reqs += [{**r, "cwd": s.get("cwd")} for r in s.get("requests") or []]
     rows = [f"{label}: {len(sessions)} sessions, {len(reqs)} requests, {tokens(toks)} tokens, {usd(total)} at API prices",
-            "By model: " + top(by_model, 4, usd),
+            "By model and effort: " + top(by_model, 5, usd),
             "Same tokens on " + ", ".join(f"{k} {usd(v)}" for k, v in on.items()) if on else "",
             "", "Costliest sessions:"]
     for s in sorted(used, key=lambda s: s["usage"]["usd"], reverse=True)[:5]:
         rows.append(f"  {when(s.get('startedAt'))}  {usd(s['usage']['usd']):>8}  {tokens(s['usage']['tokens']):>8}  "
-                    f"{len(s.get('requests') or []):>3} req  {one_line(s.get('firstPrompt'), 55)}")
+                    f"{len(s.get('requests') or []):>3} req  {minutes(s['usage'].get('runMinutes')):>7}  "
+                    f"{effort(s['usage'])}  {one_line(s.get('firstPrompt'), 45)}")
     rows.append("Costliest requests:")
     for r in sorted(reqs, key=lambda r: r["usd"], reverse=True)[:5]:
         rows.append(f"  {when(r['at'])}  {usd(r['usd']):>8}  {r['calls']:>4} calls  {one_line(r['prompt'], 60)}")
