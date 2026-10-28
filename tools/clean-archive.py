@@ -15,25 +15,40 @@ the bulk:
          not their text
   dropped tool output, file bodies, empty bookkeeping rows
 
+Tokens and cost come from Claude Code's own transcripts
+(~/.claude/projects/<project>/<session id>.jsonl and its subagents' files),
+which record every API call's usage. Each call is charged to the prompt it ran
+under and priced at today's API list prices (prices.json, shared with the usage
+meter) for the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or
+Fable 5.1. Each session and request also shows what the same tokens would have
+cost on each of those four.
+
 Writes to %USERPROFILE%\\claude-session-archive-clean\\:
-  sessions\\<session id>.jsonl   one line per event, in order
-  index.jsonl                   one line per session: folder, times, prompt
-                                and tool counts, result sizes by tool, tokens
-                                used, files read again and commands run again
+  sessions\\<session id>.jsonl   one line per event, in order; each prompt
+                                carries the tokens and cost of its request
+  index.jsonl                   one line per session: folder, times, tokens
+                                and cost, its requests, prompt and tool counts,
+                                result sizes by tool, files read again and
+                                commands run again
   report.md                     totals across every session, biggest first
-  report-<folder>.md            with --folder: the same for one project only
+  requests.md                   every session and every request in it, with
+                                tokens and cost, newest first
+  report-<folder>.md and        with --folder: the same for one project only
+  requests-<folder>.md
 
 Sessions already cleaned and unchanged since are skipped. The raw archive is
 left alone unless --delete-raw is given, which removes the rows files (never
 meta.json) of sessions cleaned and idle for --older-than days (default 14).
 
-  python tools\\clean-archive.py [--archive DIR] [--out DIR] [--all]
-                                 [--folder DIR] [--delete-raw] [--older-than DAYS]
+  python tools\\clean-archive.py [--archive DIR] [--out DIR] [--transcripts DIR]
+                                 [--all] [--folder DIR] [--delete-raw]
+                                 [--older-than DAYS]
 Python 3.9+, standard library only.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import collections
 import datetime as dt
 import json
@@ -45,9 +60,149 @@ import time
 SAY_LIMIT = 2_000      # Claude's own words: enough to see what it said
 ARG_LIMIT = 400        # a command, a pattern, a prompt to a subagent
 ERROR_LIMIT = 400      # the head of a failed tool result
-TOKENS_RE = re.compile(r"<total_tokens>(\d+) tokens left</total_tokens>")
 SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 SHELLS = {"Bash", "PowerShell"}
+SCHEMA = 2             # index entries from an older version are cleaned again
+PRICES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prices.json")
+# Every call is priced as the latest model of its family; anything else as Opus.
+LATEST = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
+          "haiku": "claude-haiku-5-5", "fable": "claude-fable-5-1"}
+
+
+def family(model: str) -> str:
+    m = (model or "").lower()
+    for fam, keys in (("fable", ("fable", "mythos")), ("sonnet", ("sonnet",)), ("haiku", ("haiku",))):
+        if any(k in m for k in keys):
+            return fam
+    return "opus"
+
+
+class Prices:
+    """Today's API list prices from prices.json: per-model rates, dated changes
+    already in force, Haiku's long-prompt tier, cache writes and fast mode."""
+
+    def __init__(self, path: str = PRICES_PATH):
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        self.rows = {r[0]: r for r in p["models"]}
+        self.cw5, self.cw1 = p.get("cacheWrite5m", 1.25), p.get("cacheWrite1h", 2.0)
+        self.fast, self.tiers, self.web = p.get("fast", {}), p.get("tiers", {}), p.get("webSearchUsd", 0.01)
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        self.changes = sorted((c for c in p.get("changes", []) if c["from"] <= today), key=lambda c: c["from"])
+
+    def label(self, model: str) -> str:
+        return self.rows[model][1]
+
+    def rates(self, model: str, prompt: int) -> tuple[float, float, float]:
+        pin, pout, pcr = self.rows[model][2:5]
+        for c in self.changes:
+            if c["model"] == model:
+                pin, pout, pcr = c.get("in", pin), c.get("out", pout), c.get("cr", pcr)
+        tier = self.tiers.get(model)
+        if tier and prompt > tier.get("over", 1 << 62):
+            pin, pout, pcr = tier.get("in", pin), tier.get("out", pout), tier.get("cr", pcr)
+        return pin, pout, pcr
+
+    def usd(self, model: str, call: dict) -> float:
+        i, o, cr, cw5, cw1 = (call[k] for k in ("i", "o", "cr", "cw5", "cw1"))
+        pin, pout, pcr = self.rates(model, i + cr + cw5 + cw1)
+        usd = (i * pin + o * pout + cr * pcr + (cw5 * self.cw5 + cw1 * self.cw1) * pin) / 1e6
+        if call["fast"]:
+            usd *= self.fast.get(model, 1)  # only models with a fast mode charge for it
+        return usd + call["web"] * self.web
+
+
+def transcript_files(root: str) -> dict[str, list[str]]:
+    """Each session's transcript and its subagents' transcripts, by session id."""
+    found: dict[str, list[str]] = collections.defaultdict(list)
+    if not os.path.isdir(root):
+        return found
+    for project in os.scandir(root):
+        if not project.is_dir():
+            continue
+        for e in os.scandir(project.path):
+            if e.is_file() and e.name.endswith(".jsonl") and SESSION_RE.match(e.name[:-6]):
+                found[e.name[:-6]].append(e.path)
+            elif e.is_dir() and SESSION_RE.match(e.name):
+                sub = os.path.join(e.path, "subagents")
+                if os.path.isdir(sub):
+                    found[e.name] += [os.path.join(sub, n) for n in os.listdir(sub) if n.endswith(".jsonl")]
+    return found
+
+
+def read_usage(paths: list[str]) -> list[dict]:
+    """Every API call in these transcripts once (a streamed reply is stored a
+    few times under the same message id), oldest first."""
+    calls: dict[str, dict] = {}
+    for path in paths:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                m = d.get("message")
+                if d.get("type") != "assistant" or not isinstance(m, dict) or not isinstance(m.get("usage"), dict):
+                    continue
+                model = str(m.get("model") or "")
+                if model.startswith("<"):
+                    continue  # <synthetic>: written by Claude Code, not the API
+                u, cc = m["usage"], m["usage"].get("cache_creation") or {}
+                cw5, cw1 = int(cc.get("ephemeral_5m_input_tokens") or 0), int(cc.get("ephemeral_1h_input_tokens") or 0)
+                if cw5 + cw1 == 0:
+                    cw5 = int(u.get("cache_creation_input_tokens") or 0)
+                calls[m.get("id") or d.get("uuid") or str(len(calls))] = {
+                    "at": d.get("timestamp") or "", "model": model, "agent": bool(d.get("isSidechain")),
+                    "i": int(u.get("input_tokens") or 0), "o": int(u.get("output_tokens") or 0),
+                    "cr": int(u.get("cache_read_input_tokens") or 0), "cw5": cw5, "cw1": cw1,
+                    "web": int((u.get("server_tool_use") or {}).get("web_search_requests") or 0),
+                    "fast": u.get("speed") == "fast",
+                }
+    return sorted(calls.values(), key=lambda c: c["at"])
+
+
+def call_tokens(c: dict) -> int:
+    return c["i"] + c["o"] + c["cr"] + c["cw5"] + c["cw1"]
+
+
+def tally(calls: list[dict], prices: Prices) -> dict:
+    """Tokens and cost of some calls: as run, and the same tokens on each latest model."""
+    out = {"calls": len(calls), "tokens": 0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "usd": 0.0,
+           "usdOn": {prices.label(m): 0.0 for m in LATEST.values()}}
+    for c in calls:
+        out["tokens"] += call_tokens(c)
+        out["input"] += c["i"]
+        out["output"] += c["o"]
+        out["cacheRead"] += c["cr"]
+        out["cacheWrite"] += c["cw5"] + c["cw1"]
+        out["usd"] += prices.usd(LATEST[family(c["model"])], c)
+        for m in LATEST.values():
+            out["usdOn"][prices.label(m)] += prices.usd(m, c)
+    out["usd"] = round(out["usd"], 4)
+    out["usdOn"] = {k: round(v, 4) for k, v in out["usdOn"].items()}
+    return out
+
+
+def fmt_tokens(n: int | None) -> str:
+    if not n:
+        return "0"
+    for unit, scale, places in (("B", 1e9, 2), ("M", 1e6, 2), ("k", 1e3, 1)):
+        if n >= scale:
+            return f"{n / scale:.{places}f}{unit}"
+    return str(n)
+
+
+def fmt_usd(x: float | None) -> str:
+    return f"${x or 0:,.2f}"
+
+
+def local_time(at: str | None) -> str:
+    try:
+        return dt.datetime.fromisoformat(at.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return at or "?"
 
 
 def cut(text: object, limit: int) -> str:
@@ -125,8 +280,9 @@ class Session:
         self.targets = collections.Counter()
         self.prompts = self.replies = self.compactions = 0
         self.agents: set[str] = set()
-        self.tokens: list[int] = []
         self.first = self.last = None
+        self.usage: dict | None = None      # the session's tokens and cost, once priced
+        self.requests: list[dict] = []      # each prompt's tokens and cost
 
     def emit(self, row: dict, kind: str, **fields):
         event = {"at": row.get("at"), "k": kind}
@@ -186,11 +342,7 @@ class Session:
                 head = cut(texts(b.get("content")), ERROR_LIMIT) if failed else None
                 self.emit(row, "result", tool=tool, chars=n, error=failed or None, answer=answer, head=head)
         elif name == "total_tokens_reminder":
-            if (m := TOKENS_RE.search(texts(content))):
-                left = int(m.group(1))
-                if not row.get("agentId"):
-                    self.tokens.append(left)
-                self.emit(row, "tokens", left=left)
+            pass  # the transcripts' usage is exact; this countdown is not needed
         elif door in ("delivery", "note", "tool-message"):
             text = texts(content)
             self.overhead[door] += len(text)
@@ -200,6 +352,34 @@ class Session:
             n = len(texts(content))
             if n:
                 self.overhead[name or door or "other"] += n
+
+    def price(self, calls: list[dict], prices: Prices):
+        """Charges each API call to the prompt it ran under (the last one before
+        it, subagents' calls included) and marks each prompt with its total."""
+        if not calls:
+            return
+        self.usage = tally(calls, prices)
+        by_model = collections.defaultdict(list)
+        for c in calls:
+            by_model[prices.label(LATEST[family(c["model"])])].append(c)
+        self.usage["byModel"] = {k: {"tokens": t["tokens"], "usd": t["usd"]}
+                                 for k, v in by_model.items() for t in [tally(v, prices)]}
+        prompts = [e for e in self.events if e["k"] == "prompt" and not e.get("agent")]
+        starts = [e.get("at") or "" for e in prompts]
+        buckets: list[list[dict]] = [[] for _ in prompts] or [[]]
+        for c in calls:
+            buckets[max(bisect.bisect_right(starts, c["at"]) - 1, 0)].append(c)
+        for n, bucket in enumerate(buckets):
+            t = tally(bucket, prices)
+            e = prompts[n] if prompts else None
+            self.requests.append({
+                "at": e.get("at") if e else (bucket[0]["at"] if bucket else None),
+                "prompt": cut(e["text"], 200) if e else "(no prompt)",
+                "calls": t["calls"], "tokens": t["tokens"], "output": t["output"],
+                "usd": t["usd"], "usdOn": t["usdOn"],
+            })
+            if e is not None:
+                e.update(tokens=t["tokens"], usd=t["usd"], apiCalls=t["calls"])
 
     def summary(self) -> dict:
         def minutes(a, b):
@@ -211,6 +391,7 @@ class Session:
         repeats = [{"tool": t, "target": cut(x, 200), "times": n}
                    for (t, x), n in self.targets.most_common() if n > 1][:25]
         return {
+            "schema": SCHEMA,
             "sessionId": self.sid,
             "cwd": self.meta.get("cwd"),
             "model": self.meta.get("model"),
@@ -223,7 +404,8 @@ class Session:
             "replies": self.replies,
             "subagents": len(self.agents),
             "compactions": self.compactions,
-            "tokensUsed": (max(self.tokens) - min(self.tokens)) if len(self.tokens) > 1 else None,
+            "usage": self.usage,
+            "requests": self.requests,
             "toolCalls": dict(self.tool_calls.most_common()),
             "toolErrors": dict(self.errors.most_common()),
             "resultChars": dict(self.result_chars.most_common()),
@@ -269,48 +451,102 @@ def in_folder(cwd: str | None, folder: str) -> bool:
     return here == want or here.startswith(want + os.sep)
 
 
+def cell(text: object, n: int = 90) -> str:
+    return str(text or "").replace("\n", " ").replace("|", "/")[:n]
+
+
 def report(index: list[dict], title: str = "Session archive report") -> str:
     total = collections.Counter
     calls, results, inputs, overhead, errors, folders = total(), total(), total(), total(), total(), total()
-    tokens_by_folder, targets = total(), total()
+    tok_folder, usd_folder, tok_model, usd_model, usd_on, targets = total(), total(), total(), total(), total(), total()
+    requests = []
     for s in index:
         calls.update(s["toolCalls"]); results.update(s["resultChars"]); inputs.update(s["inputChars"])
         overhead.update(s["overheadChars"]); errors.update(s["toolErrors"])
-        folders[s.get("cwd") or "?"] += 1
-        tokens_by_folder[s.get("cwd") or "?"] += s.get("tokensUsed") or 0
+        where = s.get("cwd") or "?"
+        folders[where] += 1
+        u = s.get("usage") or {}
+        tok_folder[where] += u.get("tokens", 0)
+        usd_folder[where] += u.get("usd", 0)
+        for m, t in (u.get("byModel") or {}).items():
+            tok_model[m] += t["tokens"]
+            usd_model[m] += t["usd"]
+        usd_on.update(u.get("usdOn") or {})
+        requests += [{**r, "cwd": where} for r in s.get("requests") or []]
         for r in s["repeated"]:
             targets[(r["tool"], r["target"])] += r["times"]
+    models = [Prices().label(m) for m in LATEST.values()]
 
     def table(title, counter, unit="", n=15):
         rows = [f"## {title}", "", "| | |", "|---|---:|"]
         rows += [f"| `{k}` | {v:,}{unit} |" for k, v in counter.most_common(n)]
         return "\n".join(rows) + "\n"
 
-    biggest = sorted(index, key=lambda s: s.get("tokensUsed") or 0, reverse=True)[:15]
     lines = [
         f"# {title}", "",
-        f"{len(index)} sessions, {sum(s['prompts'] for s in index):,} prompts, "
-        f"{sum(calls.values()):,} tool calls, {sum(s['compactions'] for s in index)} compactions. "
-        "Sizes are characters (about 4 to a token).", "",
-        "## Sessions that used the most tokens", "",
-        "| tokens | prompts | calls | folder | first prompt |", "|---:|---:|---:|---|---|",
+        f"{len(index)} sessions, {len(requests):,} requests, {fmt_tokens(sum(tok_folder.values()))} tokens, "
+        f"{fmt_usd(sum(usd_folder.values()))} at API prices. "
+        f"{sum(calls.values()):,} tool calls, {sum(s['compactions'] for s in index)} compactions.", "",
+        "API prices are today's list prices, each call priced as the latest model of its family "
+        f"({', '.join(models)}). Tokens count input, output, cache reads and cache writes. "
+        "The per-model columns are the same tokens priced on that model. "
+        "Sizes in the tool and reminder tables are characters (about 4 to a token).", "",
+        "## Cost by model", "",
+        "| model | tokens | API cost |", "|---|---:|---:|",
     ]
-    for s in biggest:
-        first = (s.get("firstPrompt") or "").replace("\n", " ").replace("|", "/")[:90]
-        lines.append(f"| {s.get('tokensUsed') or 0:,} | {s['prompts']} | {sum(s['toolCalls'].values())} "
-                     f"| `{s.get('cwd')}` | {first} |")
-    lines += ["", table("Tokens used by folder", tokens_by_folder),
-              table("Tool output fed back to Claude, by tool", results, " ch"),
+    lines += [f"| {m} | {fmt_tokens(tok_model[m])} | {fmt_usd(v)} |" for m, v in usd_model.most_common()]
+    lines += ["", "If every call had run on one model:", "",
+              "| model | API cost |", "|---|---:|"]
+    lines += [f"| {m} | {fmt_usd(usd_on[m])} |" for m in models]
+    lines += ["", "## Sessions that cost the most", "",
+              "| started | folder | requests | tokens | API cost | " + " | ".join(f"on {m}" for m in models)
+              + " | first prompt |",
+              "|---|---|---:|---:|---:|" + "---:|" * len(models) + "---|"]
+    for s in sorted(index, key=lambda s: (s.get("usage") or {}).get("usd", 0), reverse=True)[:20]:
+        u = s.get("usage") or {}
+        lines.append(f"| {local_time(s.get('startedAt'))} | {cell(os.path.basename(s.get('cwd') or '?'), 30)} "
+                     f"| {len(s.get('requests') or [])} | {fmt_tokens(u.get('tokens'))} | {fmt_usd(u.get('usd'))} | "
+                     + " | ".join(fmt_usd((u.get("usdOn") or {}).get(m)) for m in models)
+                     + f" | {cell(s.get('firstPrompt'))} |")
+    lines += ["", "## Requests that cost the most", "",
+              "| when | folder | API calls | tokens | output | API cost | prompt |",
+              "|---|---|---:|---:|---:|---:|---|"]
+    for r in sorted(requests, key=lambda r: r["usd"], reverse=True)[:25]:
+        lines.append(f"| {local_time(r['at'])} | {cell(os.path.basename(r['cwd']), 30)} | {r['calls']} "
+                     f"| {fmt_tokens(r['tokens'])} | {fmt_tokens(r['output'])} | {fmt_usd(r['usd'])} "
+                     f"| {cell(r['prompt'])} |")
+    lines += ["", "## Cost by folder", "", "| folder | sessions | tokens | API cost |", "|---|---:|---:|---:|"]
+    lines += [f"| `{k}` | {folders[k]} | {fmt_tokens(tok_folder[k])} | {fmt_usd(usd_folder[k])} |"
+              for k, _ in folders.most_common(15)]
+    lines += ["", table("Tool output fed back to Claude, by tool", results, " ch"),
               table("Tool input Claude wrote, by tool", inputs, " ch"),
               table("Reminders, hook context and thinking", overhead, " ch"),
               table("Tool calls", calls),
               table("Failed tool calls", errors),
-              table("Sessions by folder", folders),
               "## Same file or command again within a session", "",
               "| times | tool | target |", "|---:|---|---|"]
-    lines += [f"| {n} | {t} | `{x.replace('|', '/').replace(chr(10), ' ')[:120]}` |"
-              for (t, x), n in targets.most_common(30)]
+    lines += [f"| {n} | {t} | `{cell(x, 120)}` |" for (t, x), n in targets.most_common(30)]
     return "\n".join(lines) + "\n"
+
+
+def requests_md(index: list[dict], title: str = "Every session and request") -> str:
+    """Every session, newest first, with each of its requests' tokens and cost."""
+    lines = [f"# {title}", "",
+             "Each request is one prompt and all the API calls made until the next one, "
+             "subagents' included, priced at today's API list prices.", ""]
+    for s in sorted(index, key=lambda s: s.get("startedAt") or "", reverse=True):
+        u = s.get("usage") or {}
+        lines += [f"## {local_time(s.get('startedAt'))} · {os.path.basename(s.get('cwd') or '?')} · "
+                  f"{fmt_tokens(u.get('tokens'))} tokens · {fmt_usd(u.get('usd'))}", "",
+                  f"`{s.get('cwd')}` · {s.get('model')} · {s.get('minutes')} min · session `{s['sessionId']}`", ""]
+        if not s.get("requests"):
+            lines += ["No usage found: its transcript is gone.", ""]
+            continue
+        lines += ["| when | API calls | tokens | output | API cost | prompt |", "|---|---:|---:|---:|---:|---|"]
+        lines += [f"| {local_time(r['at'])} | {r['calls']} | {fmt_tokens(r['tokens'])} | {fmt_tokens(r['output'])} "
+                  f"| {fmt_usd(r['usd'])} | {cell(r['prompt'], 120)} |" for r in s["requests"]]
+        lines.append("")
+    return "\n".join(lines)
 
 
 def main(argv=None) -> int:
@@ -318,6 +554,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--archive", default=os.path.join(home, "claude-session-archive"))
     p.add_argument("--out", default=os.path.join(home, "claude-session-archive-clean"))
+    p.add_argument("--transcripts", default=os.path.join(home, ".claude", "projects"),
+                   help="Claude Code's transcripts, for each call's tokens")
     p.add_argument("--all", action="store_true", help="clean every session again, changed or not")
     p.add_argument("--delete-raw", action="store_true",
                    help="after cleaning, delete the raw rows of sessions idle for --older-than days")
@@ -343,6 +581,8 @@ def main(argv=None) -> int:
                 except (ValueError, KeyError):
                     continue
 
+    prices = Prices()
+    transcripts = transcript_files(args.transcripts)
     cleaned = skipped = deleted = raw_bytes = clean_bytes = 0
     now = time.time()
     for sid in sorted(os.listdir(args.archive)):
@@ -350,10 +590,12 @@ def main(argv=None) -> int:
         if not (SESSION_RE.match(sid) and os.path.isdir(folder)):
             continue
         out = os.path.join(sessions_dir, f"{sid}.jsonl")
-        changed = newest_mtime(folder)
+        changed = max([newest_mtime(folder)] + [os.path.getmtime(t) for t in transcripts.get(sid, [])])
         has_rows = any(p.startswith("rows-") for p in os.listdir(folder))
-        if has_rows and (args.all or sid not in index or not os.path.exists(out) or os.path.getmtime(out) < changed):
+        stale = sid not in index or index[sid].get("schema") != SCHEMA
+        if has_rows and (args.all or stale or not os.path.exists(out) or os.path.getmtime(out) < changed):
             s = read_session(folder, sid)
+            s.price(read_usage(transcripts.get(sid, [])), prices)
             text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in s.events)
             write_atomic(out, text)
             index[sid] = s.summary()
@@ -374,11 +616,15 @@ def main(argv=None) -> int:
     ordered = sorted(index.values(), key=lambda s: s.get("startedAt") or "")
     write_atomic(index_path, "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in ordered))
     write_atomic(os.path.join(args.out, "report.md"), report(ordered))
+    write_atomic(os.path.join(args.out, "requests.md"), requests_md(ordered))
     if args.folder:
         mine = [s for s in ordered if in_folder(s.get("cwd"), args.folder)]
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(os.path.normpath(args.folder))) or "folder"
+        where = os.path.normpath(args.folder)
         path = os.path.join(args.out, f"report-{name}.md")
-        write_atomic(path, report(mine, f"Session archive report: {os.path.normpath(args.folder)}"))
+        write_atomic(path, report(mine, f"Session archive report: {where}"))
+        write_atomic(os.path.join(args.out, f"requests-{name}.md"),
+                     requests_md(mine, f"Every session and request: {where}"))
         print(f"{len(mine)} sessions in {args.folder}: {path}")
 
     print(f"Cleaned {cleaned} sessions ({raw_bytes / 1e6:.1f} MB raw -> {clean_bytes / 1e6:.1f} MB), "

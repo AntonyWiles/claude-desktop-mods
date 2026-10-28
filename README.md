@@ -97,14 +97,24 @@ It writes `%USERPROFILE%\claude-session-archive-clean\`:
 - `sessions\<session id>.jsonl`: one line per event, with its time. Prompts and slash commands in
   full, Claude's replies (cut at 2,000 characters), each tool call as a short summary (the command,
   the file, the pattern), each result's size and whether it failed, questions asked and their
-  answers, compactions, subagents, and the `tokens left` readings, so a stretch of work's cost can
-  be read off.
-- `index.jsonl`: one line per session: folder, model, times, prompt and tool counts, tokens used,
-  tool output and input sizes by tool, reminder and hook-context sizes by kind, and the files and
-  commands it went back to again and again.
-- `report.md`: the same totals across every session, biggest first.
-- `report-<folder>.md`: with `--folder C:\path\to\project`, the same report counting only the
-  sessions run in that folder or below it.
+  answers, compactions and subagents. Each prompt carries its request's tokens and cost.
+- `index.jsonl`: one line per session: folder, model, times, tokens and cost (by model, and each
+  request's), prompt and tool counts, tool output and input sizes by tool, reminder and
+  hook-context sizes by kind, and the files and commands it went back to again and again.
+- `report.md`: totals across every session, biggest first: cost by model and by folder, the
+  sessions and requests that cost the most, and where the tokens went.
+- `requests.md`: every session, newest first, and every request in it, with its tokens and cost.
+- `report-<folder>.md` and `requests-<folder>.md`: with `--folder C:\path\to\project`, the same
+  counting only the sessions run in that folder or below it.
+
+Tokens and cost come from Claude Code's own transcripts in `%USERPROFILE%\.claude\projects`, which
+record every API call's usage, subagents' too. A request is one prompt and every API call until the
+next. Tokens are shown as `1.72M`, `442.7k`, and count input, output, cache reads and cache writes.
+Cost is at today's API list prices from `prices.json` (the same file the usage meter reads), with
+each call priced as the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.1.
+Each session also shows what the same tokens would have cost on each of those four. On a plan
+these are what the work would cost on the API, not what you pay. A session whose transcript has
+been deleted has no tokens or cost.
 
 Run it again whenever you like: sessions unchanged since the last run are skipped. It only reads the
 raw archive. To reclaim the space, `--delete-raw` deletes the `rows-*.jsonl` of sessions that are

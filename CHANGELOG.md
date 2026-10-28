@@ -9,7 +9,9 @@
   for turning repeated work into skills later. `/archive` shows where; `sessionArchive` turns it off.
 - New: `tools\clean-archive.py` boils the archive down (about a tenth of the size) to prompts,
   replies, one-line tool calls, result sizes, token readings, and a per-session index and report
-  for spotting where tokens go; `--folder` adds a report for one project. Empty bookkeeping rows
+  for spotting where tokens go; `--folder` adds a report for one project. Every session and
+  request shows its tokens and API cost at today's prices for Opus 5.5, Sonnet 5.5, Haiku 5.5 and
+  Fable 5.1, read from Claude Code's transcripts; `requests.md` lists them all. Empty bookkeeping rows
   are no longer archived.
 - New band layout: the full-width `── usage` / `── git` rules are gone. Each feature's rows sit
   beside a short dim label in a gutter (`usage │`, `git │`, `next │`), and the context ring closes
