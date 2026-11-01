@@ -1,5 +1,7 @@
-import type { EngineInterface, PluginOptions } from 'claude-code'
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, PluginOptions, RenderElement } from 'claude-code'
 
+import type { BandIn } from '../band'
 import type { In, NextOf } from '../hook-types'
 
 // Handoff nudge: once a Sonnet or Opus session's context passes a mark (180k
@@ -8,6 +10,9 @@ import type { In, NextOf } from '../hook-types'
 // The note rides on tool results (mid-turn) and on prompts the user sends.
 // It is sent once per window; again only after another `repeatEvery` tokens,
 // and the count starts over when the context shrinks (compaction, /clear).
+// A toggle in the band pauses it for the session (the option removes it).
+
+const isPaused = atom({ plugin: 'desktop-mods', key: 'isHandoffPaused' } as const, false)
 
 let mark = 180_000
 let repeatEvery = 50_000
@@ -38,8 +43,11 @@ export function noteFor(t: number) {
   )
 }
 
-// The note to send now, if one is due; records it as sent.
-function due(): string | null {
+// The note to send now, if one is due; records it as sent. Nothing while the
+// band's toggle has it paused, and nothing is recorded, so turning it back on
+// sends the note at once if the context is already past the mark.
+async function due($: EngineInterface): Promise<string | null> {
+  if (await read($, isPaused)) return null
   if (!isBigModel(model) || tokens < mark) return null
   if (nudgedAt && tokens < nudgedAt + repeatEvery) return null
   nudgedAt = tokens
@@ -76,14 +84,31 @@ export async function toolCall($: EngineInterface, e: In<'tool.call'>, next: Nex
   const result = await next(e)
   if (!('result' in result) || result.deny !== undefined) return result
   await readModel($)
-  const note = due()
+  const note = await due($)
 
   return note ? { ...result, context: [...(result.context ?? []), note] } : result
 }
 
 export async function promptSubmit($: EngineInterface, e: In<'prompt.submit'>, next: NextOf<'prompt.submit'>) {
   await readModel($)
-  const note = due()
+  const note = await due($)
 
   return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
+}
+
+// The toggle for the band, drawn beside the ring: click to stop the model
+// being told to wrap up at the mark, click again to bring that back.
+export async function bandToggle($: EngineInterface, e: BandIn): Promise<RenderElement | null> {
+  const paused = await read($, isPaused)
+  const { Button } = $.ui.resolve(e)
+
+  return (
+    <Button
+      key="handoff-toggle"
+      label={paused ? 'handoff nudge off' : 'handoff nudge on'}
+      plain
+      dimColor
+      onPress={() => void update($, isPaused, value => !value)}
+    />
+  )
 }

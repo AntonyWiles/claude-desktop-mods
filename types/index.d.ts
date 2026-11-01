@@ -272,6 +272,8 @@ declare module 'claude-code' {
       isBandHidden: boolean
       // context ring
       contextFill: ContextFill | null
+      // handoff nudge: paused for this session from the band's toggle
+      isHandoffPaused: boolean
     }
   }
 }

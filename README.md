@@ -89,6 +89,12 @@ claude plugin configure desktop-mods@claude-desktop-mods          # show them
 | `minAnswerChars` | `80` | no suggestions after answers shorter than this |
 | `suggestSkills` | `true` | let suggestions name your skills and slash commands |
 | `sessionArchive` | `true` | the session archive and `/archive` |
+| `handoffNudge` | `true` | on Sonnet and Opus, tell the model to stop at a clean point and write a handoff once context passes `handoffAt`; `false` removes it and its band toggle |
+| `handoffAt` | `180000` | tokens at which the handoff nudge is first sent |
+| `handoffRepeat` | `50000` | send it again after this many more tokens |
+
+With the handoff nudge on, the first row of the band has a **handoff nudge on/off** toggle: click it to
+stop the model being told to wrap up at the mark for the rest of that session; click again to bring it back.
 
 ## Updating
 

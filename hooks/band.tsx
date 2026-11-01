@@ -10,7 +10,8 @@
 //     git │ [Commit] [Push]  claude-desktop-mods  main ⌄  +0 −0 · 2 to push
 //    next │ 1 Cut a minor release and push
 //
-// The context ring, where a surface draws it, closes the first row.
+// The handoff nudge's toggle and the context ring, where a surface draws it,
+// close the first row.
 
 import type { EngineInterface, RenderElement } from 'claude-code'
 
@@ -31,15 +32,22 @@ export function contentColumns(e: BandIn): number {
 
 // `below` is what the engine and any other plugin drew. Their node may not
 // sit under a sized Box, so only the band's own rows are sized.
-export function drawBand($: EngineInterface, e: BandIn, below: RenderElement, sections: Section[], ring: RenderElement | null): RenderElement {
+export function drawBand(
+  $: EngineInterface,
+  e: BandIn,
+  below: RenderElement,
+  sections: Section[],
+  ring: RenderElement | null,
+  toggle: RenderElement | null = null,
+): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const shown = sections.filter(section => section.rows.length > 0)
-  if (shown.length === 0 && ring === null) return below
+  if (shown.length === 0 && ring === null && toggle === null) return below
 
   const rows = shown.flatMap(section =>
     section.rows.map((row, index) => ({ label: index === 0 ? section.label : '', row, key: `${section.label}:${index}` })),
   )
-  // The ring alone still gets a row of its own, at the right.
+  // The ring and toggle alone still get a row of their own, at the right.
   if (rows.length === 0) rows.push({ label: '', row: <Box />, key: 'ring' })
 
   return (
@@ -55,8 +63,9 @@ export function drawBand($: EngineInterface, e: BandIn, below: RenderElement, se
             <Box flexDirection="row" flexGrow={1} flexShrink={1}>
               {row}
             </Box>
-            {index === 0 && ring !== null ? (
-              <Box flexShrink={0} marginLeft={1}>
+            {index === 0 && (ring !== null || toggle !== null) ? (
+              <Box flexShrink={0} marginLeft={1} gap={1}>
+                {toggle}
                 {ring}
               </Box>
             ) : null}

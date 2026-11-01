@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New: a **handoff nudge on/off** toggle in the band, beside the context ring. Click it to stop
+  Sonnet and Opus being told to wrap up and hand off at about 180k tokens, for the rest of that
+  session; click again to bring it back. The `handoffNudge` option still removes the nudge and the toggle.
 - New: five skills for spending fewer tokens and less time, in every project. `check-changed`
   checks the changed files in one command, failures only. `plan-step` runs one plan step and stops.
   `fresh-start` writes a handoff and moves to a fresh session. `file-outline` gives a large file's

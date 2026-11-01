@@ -27,6 +27,7 @@ import {
   turnStart as nextTurnStart,
 } from './features/next-steps'
 import {
+  bandToggle as handoffBandToggle,
   configure as configureHandoff,
   promptSubmit as handoffPromptSubmit,
   sessionMeasure as handoffSessionMeasure,
@@ -140,15 +141,16 @@ export const register: Register = (on, options) => {
     // 1/2/3 hotkeys would clash with its buttons.
     const survey = e.props.hasSurvey
 
-    const [usageRows, gitRows, nextRows, ringMark] = await Promise.all([
+    const [usageRows, gitRows, nextRows, ringMark, handoffToggle] = await Promise.all([
       usage ? usageBandSection($, e) : null,
       git ? gitBandSection($, e) : null,
       steps && !survey ? nextBandSection($, e) : null,
       ring ? bandRing($, e) : null,
+      handoff ? handoffBandToggle($, e) : null,
     ])
     const sections = [usageRows, gitRows, nextRows].filter(section => section !== null)
 
-    return drawBand($, e, below, sections, ringMark)
+    return drawBand($, e, below, sections, ringMark, handoffToggle)
   })
 
   // Presses in the desktop's Clients: the git links and the next-step list.
