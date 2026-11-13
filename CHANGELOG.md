@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 - 2026-11-14
 
+- Fix: Fable 5.2 and Mythos 5.2 were priced as Fable 5 by the collector and the band, and as
+  Fable 5.1 by the session archive, so the three disagreed with Claude Code's own cost. They are now
+  priced at $8 / $40 per MTok with $0.20 cache reads, and the archive prices Fable as 5.2.
 - New: a **handoff nudge on/off** toggle in the band, beside the context ring. Click it to stop
   Sonnet and Opus being told to wrap up and hand off at about 180k tokens, for the rest of that
   session; click again to bring it back. The `handoffNudge` option still removes the nudge and the toggle.
