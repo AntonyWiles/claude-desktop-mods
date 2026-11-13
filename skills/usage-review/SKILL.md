@@ -7,7 +7,7 @@ description: Show what this session, this project or a stretch of days cost in t
 
 The desktop-mods session archive records every session. Its cleaner reads Claude Code's own
 transcripts for each API call's exact usage and prices it at today's API list prices, as the latest
-model of its family (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1). This skill brings that up to
+model of its family (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.2). This skill brings that up to
 date and prints a screenful.
 
 ## Run it

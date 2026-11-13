@@ -133,7 +133,7 @@ Tokens and cost come from Claude Code's own transcripts in `%USERPROFILE%\.claud
 record every API call's usage, subagents' too. A request is one prompt and every API call until the
 next. Tokens are shown as `1.72M`, `442.7k`, and count input, output, cache reads and cache writes.
 Cost is at today's API list prices from `prices.json` (the same file the usage meter reads), with
-each call priced as the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.1.
+each call priced as the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.2.
 Each session also shows what the same tokens would have cost on each of those four. On a plan
 these are what the work would cost on the API, not what you pay. A session whose transcript has
 been deleted, and was never cleaned before that, has no tokens or cost.

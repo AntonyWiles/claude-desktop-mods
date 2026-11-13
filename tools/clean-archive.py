@@ -20,7 +20,7 @@ Tokens and cost come from Claude Code's own transcripts
 which record every API call's usage. Each call is charged to the prompt it ran
 under and priced at today's API list prices (prices.json, shared with the usage
 meter) for the latest model of its family: Opus 5.5, Sonnet 5.5, Haiku 5.5 or
-Fable 5.1. Each session and request also shows what the same tokens would have
+Fable 5.2. Each session and request also shows what the same tokens would have
 cost on each of those four.
 
 Writes to %USERPROFILE%\\claude-session-archive-clean\\:
@@ -66,7 +66,7 @@ SCHEMA = 3             # index entries from an older version are cleaned again
 PRICES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prices.json")
 # Every call is priced as the latest model of its family; anything else as Opus.
 LATEST = {"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
-          "haiku": "claude-haiku-5-5", "fable": "claude-fable-5-1"}
+          "haiku": "claude-haiku-5-5", "fable": "claude-fable-5-2"}
 
 
 def family(model: str) -> str:

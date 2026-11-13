@@ -219,6 +219,7 @@ function statusText(): string {
 function rateCard(model: string, prompt = 0): { label: string; fam: string; in: number; out: number; cr: number; planCr: number } {
   const m = model.toLowerCase()
   if (m.includes('fable') || m.includes('mythos')) {
+    if (m.includes('5-2')) return { label: 'Fable 5.2', fam: 'fable', in: 8, out: 40, cr: 0.2, planCr: 0.2 }
     const cr = m.includes('5-1') ? 0.25 : 1
     return { label: 'Fable', fam: 'fable', in: 10, out: 50, cr, planCr: cr }
   }
