@@ -60,6 +60,9 @@ The installer:
 3. copies the usage collector to `~/.claude/desktop-mods/app` and runs it as the hidden
    Scheduled Task `usage-meter` at logon (`-NoCollector` skips this; needs Python 3.9+).
    Usage history in `~/.claude/usage-meter` is kept.
+   The collector also keeps a token ledger, `~/.claude/usage-meter/local/tokens.json`: every
+   day's calls, input, output, cache reads and 5-minute and 1-hour cache writes per model, for
+   400 days. The `/burn` pane's History tab shows it by month and day at today's API list prices.
 
 Collector options are passed through: `-HostName Desktop`, and for HTTP sync between machines
 `-Peer laptop=http://192.168.1.20:8765 -Listen 8765 -Token <shared> -Allow 192.168.1.0/24`.

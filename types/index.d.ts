@@ -116,6 +116,27 @@ export type HistoryDay = {
   top: [string, number][]
 }
 
+/** Tokens of some stretch, from the collector's token ledger, priced at today's list prices. */
+export type TokenTally = {
+  calls: number
+  in: number
+  out: number
+  cacheRead: number
+  cacheWrite5m: number
+  cacheWrite1h: number
+  web: number
+  usd: number
+}
+
+/** The token ledger (~/.claude/usage-meter/local/tokens.json), kept for keepDays. */
+export type TokenLedger = {
+  since: string | null
+  keepDays: number
+  total: TokenTally
+  months: (TokenTally & { month: string; label: string; activeDays: number; models: (TokenTally & { label: string })[] })[]
+  days: (TokenTally & { date: string })[]
+}
+
 export type HostInfo = {
   host: string
   isSelf: boolean
@@ -133,6 +154,8 @@ export type View = {
   window: ScopeView
   week: ScopeView
   history: HistoryDay[]
+  /** absent from collectors older than the token ledger */
+  tokens?: TokenLedger
   monthUsd: number
   typicalSessionUsd: number
   biggestSessionUsd: number

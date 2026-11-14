@@ -93,6 +93,19 @@ function view(selfAge: number) {
       total: 300 + i * 10 + (i % 3 === 0 ? 20 : 0),
       top: [['my-app', 200], ['website', 80]],
     })),
+    tokens: {
+      since: '2026-07-02',
+      keepDays: 400,
+      total: { calls: 9000, in: 50_000, out: 4_000_000, cacheRead: 900_000_000, cacheWrite5m: 8_000_000, cacheWrite1h: 3_000_000, web: 0, usd: 2950 },
+      months: [
+        {
+          month: '2026-10', label: 'Oct 2026', activeDays: 21, calls: 6000, in: 30_000, out: 2_500_000, cacheRead: 600_000_000,
+          cacheWrite5m: 5_000_000, cacheWrite1h: 2_000_000, web: 12, usd: 1840,
+          models: [{ label: 'Opus 5.5', calls: 5000, in: 25_000, out: 2_000_000, cacheRead: 550_000_000, cacheWrite5m: 4_000_000, cacheWrite1h: 2_000_000, web: 12, usd: 1700 }],
+        },
+      ],
+      days: [{ date: '2026-09-38', calls: 400, in: 900, out: 120_000, cacheRead: 41_000_000, cacheWrite5m: 300_000, cacheWrite1h: 90_000, web: 0, usd: 430 }],
+    },
     monthUsd: 5120,
     typicalSessionUsd: 17.46,
     biggestSessionUsd: 450,
@@ -319,7 +332,11 @@ test('every view draws on terminal and desktop, through the dropdowns', ONLY, as
     ])
 
     await ui.select({ key: 'tab', value: 'history' })
-    await check('history', ['LAST 14 DAYS', 'BY DAY', 'Day 38', /Desktop \$430 · Laptop \$0\.00 · my-app/])
+    await check('history', [
+      'LAST 14 DAYS', 'BY DAY', 'Day 38', /Desktop \$430 · Laptop \$0\.00 · my-app/, /41M cache read · 300k cache write 5m · 90k cache write 1h · 400 calls/,
+      'TOKENS BY MONTH', 'Oct 2026 · 21 days', /2\.5M out · 600M cache read · 5\.0M cache write 5m · 2\.0M cache write 1h · 12 web searches · 6,000 calls/,
+      '18.4× the $100/mo Max 5x', 'Opus 5.5 $1,700', /Since 2026-07-02, every machine, kept 13 months/,
+    ])
 
     await ui.select({ key: 'tab', value: 'accuracy' })
     await check('accuracy', [

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- New: a token ledger. The usage collector keeps every day's tokens per model (calls, input,
+  output, cache reads, 5-minute and 1-hour cache writes, web searches) in
+  `~/.claude/usage-meter/local/tokens.json` for 400 days, long after Claude Code deletes the
+  transcripts. The `/burn` pane's History tab shows them by month and by day, priced at today's
+  API list prices, with each month's value against your plan's price and the top models. Re-run
+  `deploy\install.ps1` to update the collector; the ledger starts from the 35 days the collector
+  already holds.
+
 ## 1.0.2 - 2026-11-14
 
 - Fix: Fable 5.2 and Mythos 5.2 were priced as Fable 5 by the collector and the band, and as

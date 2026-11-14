@@ -184,9 +184,11 @@ class Prices:
             pin, pout, pcr = tier.get("in", pin), tier.get("out", pout), tier.get("cr", pcr)
         return pin, pout, pcr
 
-    def usd(self, model: str, i: int, o: int, cr: int, cw5: int, cw1: int, web: int, fast: int, ts: int = 0, plan: bool = False) -> float:
+    def usd(self, model: str, i: int, o: int, cr: int, cw5: int, cw1: int, web: int, fast: int, ts: int = 0, plan: bool = False,
+            prompt: int | None = None) -> float:
+        """prompt: the prompt size that picks the tier, for totals of many requests (default: this one's)."""
         (_, mult, _) = self.of(model)
-        pin, pout, pcr = self.rates(model, ts or now_ms(), i + cr + cw5 + cw1, plan)
+        pin, pout, pcr = self.rates(model, ts or now_ms(), i + cr + cw5 + cw1 if prompt is None else prompt, plan)
         usd = (i * pin + o * pout + cr * pcr + cw5 * pin * self.cw5 + cw1 * pin * self.cw1) / 1e6
         if fast:
             usd *= mult

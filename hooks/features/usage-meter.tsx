@@ -11,6 +11,7 @@ import type {
   ContextView,
   FleetEntry,
   HistoryDay,
+  TokenTally,
   Live,
   Pulse,
   Scope,
@@ -324,6 +325,20 @@ function tokText(t: Tokens): string {
   const total = sumTok(t)
   const cached = total > 0 ? Math.round((t[2] / total) * 100) : 0
   return `${fmtTok(total)} tok${cached >= 50 ? ` (${cached}% cached)` : ''}`
+}
+
+/** Every kind of token in a ledger tally, the way the API bills them. */
+function tallyText(t: TokenTally): string {
+  const parts = [
+    `${fmtTok(t.in)} in`,
+    `${fmtTok(t.out)} out`,
+    `${fmtTok(t.cacheRead)} cache read`,
+    `${fmtTok(t.cacheWrite5m)} cache write 5m`,
+    `${fmtTok(t.cacheWrite1h)} cache write 1h`,
+  ]
+  if (t.web) parts.push(`${t.web.toLocaleString('en-US')} web searches`)
+  parts.push(`${t.calls.toLocaleString('en-US')} calls`)
+  return parts.join(' · ')
 }
 
 function clip(text: string, n: number): string {
@@ -1205,6 +1220,8 @@ export async function renderPane($: EngineInterface, e: MatchedIn<'ui.render', {
   } else if (tab === 'history') {
     const hostNames = [...new Set(v.history.flatMap(d => Object.keys(d.hosts)))].sort()
     const days = v.history.slice(-7).reverse()
+    const ledger = v.tokens
+    const plan = v.config.plan
     const max = Math.max(1, ...v.history.map(d => d.total))
     body = (
       <Box flexDirection="column">
@@ -1229,15 +1246,39 @@ export async function renderPane($: EngineInterface, e: MatchedIn<'ui.render', {
           ))
         )}
         <Section title="By day" />
-        {days.map(d => (
+        {days.map(d => {
+          const tok = ledger?.days.find(t => t.date === d.date)
+          return (
+            <Box flexDirection="column">
+              <Line left={d.label} right={fmtUsd(d.total)} />
+              <Note
+                text={[...Object.entries(d.hosts).map(([host, usd]) => `${host} ${fmtUsd(usd ?? 0)}`), ...d.top.slice(0, 2).map(([p]) => p)].join(' · ')}
+                indent={2}
+              />
+              {tok && <Note text={tallyText(tok)} indent={2} wrap />}
+            </Box>
+          )
+        })}
+
+        <Section title="Tokens by month" right={ledger ? fmtUsd(ledger.total.usd) : undefined} />
+        {!ledger && <Note text="Update the collector (deploy\install.ps1) to keep a token ledger." wrap />}
+        {ledger && ledger.months.length === 0 && <Note text="Nothing recorded yet." />}
+        {ledger?.months.map(m => (
           <Box flexDirection="column">
-            <Line left={d.label} right={fmtUsd(d.total)} />
-            <Note
-              text={[...Object.entries(d.hosts).map(([host, usd]) => `${host} ${fmtUsd(usd ?? 0)}`), ...d.top.slice(0, 2).map(([p]) => p)].join(' · ')}
-              indent={2}
-            />
+            <Line left={`${m.label} · ${m.activeDays} day${m.activeDays === 1 ? '' : 's'}`} right={fmtUsd(m.usd)} rightDim={false} />
+            <Note text={tallyText(m)} indent={2} wrap />
+            {plan?.usdPerMonth ? (
+              <Note text={`${(m.usd / plan.usdPerMonth).toFixed(1)}× the ${fmtUsd(plan.usdPerMonth)}/mo ${plan.name ?? 'plan'}`} indent={2} />
+            ) : null}
+            <Note text={m.models.slice(0, 4).map(x => `${x.label} ${fmtUsd(x.usd)}`).join(' · ')} indent={2} wrap />
           </Box>
         ))}
+        {ledger?.since && (
+          <Note
+            text={`Since ${ledger.since}, every machine, kept ${Math.round(ledger.keepDays / 30)} months. Priced at today's API list prices; on a plan, what the same tokens would cost on the API.`}
+            wrap
+          />
+        )}
       </Box>
     )
   } else if (tab === 'accuracy') {

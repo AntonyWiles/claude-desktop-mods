@@ -24,6 +24,13 @@ FAMS = ("opus", "sonnet", "haiku", "haiku-long", "fable", "other")
 FAM_LABEL = {"opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku", "haiku-long": "Haiku, prompts over 100k", "fable": "Fable", "other": "Other"}
 SHOWN = ("opus", "sonnet", "haiku", "haiku-long")
 HISTORY_DAYS = 14
+# The token ledger (local/tokens.json): every day's tokens per model, kept long after the
+# day files (35 days) and the transcripts (30 days) are gone, and priced at today's list
+# prices whenever it is read. Days younger than TOKENS_FIRM_DAYS are rebuilt from the day
+# files on every build; older days only ever grow.
+TOKENS_KEEP_DAYS = 400
+TOKENS_FIRM_DAYS = 28
+TOKENS_DAYS_SHOWN = 31
 TOP = 8
 REBUILD_TOKENS = 50_000  # one request writing this much to the cache re-sent most of a context
 # 7 day pace. Nobody uses Claude between midnight and 8am local, so those hours
@@ -364,6 +371,7 @@ class Entry:
         self.remote = [bool((sessions.get(doc["s"][r[1]]) or {}).get("remote")) for r in doc["reqs"]]
         self.keep = [True] * len(doc["reqs"])
         self.daily = None  # {(local date, machine, project): usd}, rebuilt when the file or its dedupe changes
+        self.tokens = None  # {local date: {"model|fast|long": [calls, in, out, cacheRead, cw5m, cw1h, web]}}, likewise
         self.first = doc["reqs"][0][0] if doc["reqs"] else 0
 
 
@@ -417,6 +425,8 @@ class ViewBuilder:
         self.last_body = ""
         self.last_sig = None
         self.last_build = 0.0
+        self.tokens_path = os.path.join(root, "local", "tokens.json")
+        self.tokens_doc = None  # loaded on first build
         self.pace_cache = None  # (when, weights, info): the replay runs every PACE_REPLAY_EVERY
 
     # -------------------------------------------------------------- loading
@@ -491,6 +501,7 @@ class ViewBuilder:
                         e.keep[i] = r[12] not in own
                         own.add(r[12])
                 e.daily = None
+                e.tokens = None
             self.group_sig[day] = sig
 
     # -------------------------------------------------------------- build
@@ -726,6 +737,7 @@ class ViewBuilder:
             "window": self.export_scope(w5, ctx),
             "week": self.export_scope(w7, ctx),
             "history": self.history(daily, now),
+            "tokens": self.token_ledger(entries, now),
             "monthUsd": round(month, 4),
             "typicalSessionUsd": round(typical, 2),
             "biggestSessionUsd": round(biggest, 2),
@@ -1121,6 +1133,105 @@ class ViewBuilder:
             if aid not in shown:
                 out.append((aid, 1))
         return out
+
+    # -------------------------------------------------------------- token ledger
+
+    def file_tokens(self, e: Entry) -> dict:
+        out: dict = {}
+        M = e.doc["m"]
+        for i, r in enumerate(e.doc["reqs"]):
+            if not e.keep[i]:
+                continue
+            m = M[r[4]] if r[4] < len(M) else ""
+            long = self.prices.is_long(m, r[5] + r[7] + r[8] + r[9])
+            key = f"{m}|{1 if r[11] else 0}|{1 if long else 0}"
+            t = out.setdefault(local_date(r[0]), {}).setdefault(key, [0] * 7)
+            t[0] += 1
+            for j, k in enumerate((5, 6, 7, 8, 9, 10)):
+                t[j + 1] += r[k]
+        return out
+
+    def token_ledger(self, entries: list, now: int) -> dict:
+        """Merge the loaded day files into local/tokens.json and export it, priced now."""
+        doc = self.tokens_doc
+        if doc is None:
+            doc = load_json(self.tokens_path, None)
+            if not isinstance(doc, dict) or doc.get("v") != 1:
+                doc = {"v": 1, "days": {}}
+            self.tokens_doc = doc
+        fresh: dict = {}
+        for e in entries:
+            if e.tokens is None:
+                e.tokens = self.file_tokens(e)
+            for date, models in e.tokens.items():
+                into = fresh.setdefault(date, {})
+                for key, t in models.items():
+                    acc = into.setdefault(key, [0] * 7)
+                    for j in range(7):
+                        acc[j] += t[j]
+        firm = local_date(now - TOKENS_FIRM_DAYS * DAY)
+        days = doc["days"]
+        changed = False
+        for date, models in fresh.items():
+            old = days.get(date)
+            calls = sum(t[0] for t in models.values())
+            # a day half out of the loaded files (or rebuilt from fewer transcripts) never shrinks a kept one
+            if old != models and (date >= firm or old is None or calls >= sum(t[0] for t in old.values())):
+                days[date] = models
+                changed = True
+        drop = local_date(now - TOKENS_KEEP_DAYS * DAY)
+        for date in [d for d in days if d < drop]:
+            del days[date]
+            changed = True
+        if changed:
+            write_json(self.tokens_path, doc)
+        return self.export_tokens(days, now)
+
+    def export_tokens(self, days: dict, now: int) -> dict:
+        def tally():
+            return {"calls": 0, "in": 0, "out": 0, "cacheRead": 0, "cacheWrite5m": 0, "cacheWrite1h": 0, "web": 0, "usd": 0.0}
+
+        def add(into: dict, t: list, usd: float) -> None:
+            for j, k in enumerate(("calls", "in", "out", "cacheRead", "cacheWrite5m", "cacheWrite1h", "web")):
+                into[k] += t[j]
+            into["usd"] += usd
+
+        def done(t: dict) -> dict:
+            return {**t, "usd": round(t["usd"], 2)}
+
+        months: dict = {}
+        shown_from = local_date(now - (TOKENS_DAYS_SHOWN - 1) * DAY)
+        recent = []
+        total = tally()
+        for date in sorted(days):
+            day = tally()
+            month = months.setdefault(date[:7], {"t": tally(), "models": {}, "days": 0})
+            month["days"] += 1
+            for key, t in days[date].items():
+                model, fast, long = (key.rsplit("|", 2) + ["0", "0"])[:3]
+                usd = self.prices.usd(model, t[1], t[2], t[3], t[4], t[5], t[6], int(fast), now, prompt=(1 << 61) if long == "1" else 0)
+                add(day, t, usd)
+                add(month["t"], t, usd)
+                add(total, t, usd)
+                add(month["models"].setdefault(self.prices.label(model), tally()), t, usd)
+            if date >= shown_from:
+                recent.append({"date": date, **done(day)})
+        out_months = []
+        for key in sorted(months, reverse=True):
+            m = months[key]
+            label = dt.datetime.strptime(key + "-01", "%Y-%m-%d").strftime("%b %Y")
+            models = sorted(m["models"].items(), key=lambda kv: -kv[1]["usd"])
+            out_months.append({
+                "month": key, "label": label, "activeDays": m["days"], **done(m["t"]),
+                "models": [{"label": name, **done(t)} for name, t in models],
+            })
+        return {
+            "since": min(days) if days else None,
+            "keepDays": TOKENS_KEEP_DAYS,
+            "total": done(total),
+            "months": out_months,
+            "days": list(reversed(recent)),
+        }
 
     def history(self, daily: dict, now: int) -> list:
         out = []
