@@ -29,6 +29,7 @@ HISTORY_DAYS = 14
 # prices whenever it is read. Days younger than TOKENS_FIRM_DAYS are rebuilt from the day
 # files on every build; older days only ever grow.
 TOKENS_KEEP_DAYS = 400
+VIEW_LIMIT_DAYS = 9  # plan-limit readings the band reads
 TOKENS_FIRM_DAYS = 28
 TOKENS_DAYS_SHOWN = 31
 TOP = 8
@@ -468,9 +469,11 @@ class ViewBuilder:
         for name in os.listdir(inbox) if os.path.isdir(inbox) else []:
             if name.endswith(".json"):
                 paths.append(os.path.join(inbox, name))
+        # limits.json keeps a long history for the usage report; the band needs only recent readings
+        since = int(time.time() * 1000) - VIEW_LIMIT_DAYS * DAY
         for p in paths:
             for s in load_json(p, {}).get("samples", []):
-                if isinstance(s, list) and len(s) >= 4:
+                if isinstance(s, list) and len(s) >= 4 and s[0] >= since:
                     samples[(s[0], s[1])] = s[:4]
         return sorted(samples.values(), key=lambda s: s[0])
 

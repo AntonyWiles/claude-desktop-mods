@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Claude plan usage report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { --bg:#f6f6f4; --card:#fff; --fg:#1d1d1b; --mute:#6b6b66; --line:#e3e2dd; --accent:#c96442; --good:#2f7d4f; --bad:#b3392f; --warn:#a66b00; }
+@media (prefers-color-scheme: dark) { :root { --bg:#1b1b19; --card:#252522; --fg:#ecebe6; --mute:#9b9a93; --line:#3a3935; --accent:#e08a66; --good:#5cb47f; --bad:#e2675c; --warn:#d9a341; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+header { padding:18px 24px 8px; }
+h1 { font-size:20px; margin:0 0 4px; }
+h2 { font-size:15px; margin:0 0 10px; }
+.mute { color:var(--mute); }
+main { padding:0 24px 40px; display:grid; gap:16px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow:auto; }
+.bar { position:sticky; top:0; z-index:5; background:var(--bg); padding:10px 24px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.bar label { display:flex; gap:4px; align-items:center; }
+select, input, button { font:inherit; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:6px; padding:3px 7px; }
+button { cursor:pointer; } button.on { border-color:var(--accent); color:var(--accent); }
+.kpis { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:10px; }
+.kpi { border:1px solid var(--line); border-radius:8px; padding:10px; }
+.kpi b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
+.kpi span { color:var(--mute); font-size:12px; }
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(440px, 1fr)); gap:16px; }
+table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+th, td { padding:4px 8px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; vertical-align:top; }
+th { color:var(--mute); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--card); cursor:pointer; }
+td.l, th.l { text-align:left; } td.wrap { white-space:normal; min-width:260px; max-width:520px; text-align:left; }
+.scroll { max-height:520px; overflow:auto; }
+.verdict { font-size:15px; } .verdict li { margin:4px 0; }
+.good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+.chart { position:relative; } .chart svg { display:block; width:100%; }
+.tip { position:fixed; pointer-events:none; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-size:12px; box-shadow:0 2px 8px #0003; display:none; z-index:10; max-width:360px; }
+.legend { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; margin-top:6px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+.heat td { padding:0; width:28px; height:20px; text-align:center; font-size:10px; border:1px solid var(--card); }
+.pill { display:inline-block; padding:0 6px; border-radius:9px; background:var(--line); font-size:11px; margin-right:3px; }
+.more { margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude plan usage</h1>
+  <div class="mute" id="sub"></div>
+</header>
+<div class="bar">
+  <label>From <input type="date" id="from"></label>
+  <label>To <input type="date" id="to"></label>
+  <span id="presets"></span>
+  <label>Plan <select id="plan"></select></label>
+  <label>Machine <select id="host"></select></label>
+  <label>Project <select id="proj"></select></label>
+</div>
+<main>
+  <section class="card" id="verdict"></section>
+  <section class="card" id="irrCard">
+    <h2>Irregularities <span class="mute" style="font-weight:400">— is the same use moving the % by the same amount?</span></h2>
+    <div class="mute" style="margin-bottom:8px">Limit steps are grouped into measurements of about 5% (7-day) or 10% (5-hour). Each gives the API-equivalent $ and tokens it took to move the limit 1%, compared with the median of the measurements before it on the same plan. Per-model rates come from fitting every measurement's model mix against the % it moved.</div>
+    <div id="findings"></div>
+    <div class="bar" style="position:static;padding:10px 0 6px;border:0">
+      <label>Limit <select id="irrKind"><option value="1">7-day</option><option value="0">5-hour</option></select></label>
+      <label>Show <select id="irrMetric"><option value="usd">API $ per 1%</option><option value="tok">million tokens per 1%</option><option value="out">thousand output tokens per 1%</option></select></label>
+    </div>
+    <div class="chart" id="irrChart"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div><h2>Per model: API $ per 1% of the limit</h2><div class="scroll" style="max-height:380px" id="fits"></div></div>
+      <div><h2>By time of day and weekday</h2><div class="scroll" style="max-height:380px" id="times"></div></div>
+    </div>
+    <h2 style="margin-top:12px">Every measurement</h2><div class="scroll" id="chunks"></div>
+  </section>
+  <section class="card"><h2>In the selected range</h2><div class="kpis" id="kpis"></div></section>
+  <section class="card">
+    <h2>Limit readings <button id="remain">show % remaining</button></h2>
+    <div class="chart" id="limitChart"></div>
+    <div class="mute">Readings are taken when a Claude Code turn runs, so flat stretches are times nothing ran (or only claude.ai chat, which uses the same limit but is not in this ledger).</div>
+  </section>
+  <section class="card">
+    <h2>Usage over time</h2>
+    <div class="bar" style="position:static;padding:0 0 8px;border:0">
+      <label>By <select id="gran"><option>month</option><option>week</option><option selected>day</option><option>hour</option><option>minute</option></select></label>
+      <label>Show <select id="metric"></select></label>
+      <label>Split by <select id="split"><option value="">nothing</option><option value="model">model</option><option value="agent">main vs subagent</option><option value="effort">effort</option><option value="project">project</option><option value="host">machine</option><option value="plan">plan</option></select></label>
+    </div>
+    <div class="chart" id="timeChart"></div>
+  </section>
+  <section class="card"><h2>When you use it <span class="mute" id="heatNote"></span></h2><div id="heat"></div></section>
+  <section class="grid2" id="breakdowns"></section>
+  <section class="card"><h2>Every change of the limit %</h2><div class="mute" style="margin-bottom:6px">Each row is one reading that differed from the one before it, with every request made (on every machine) since the % last changed: the use that moved it. Integer %, so small steps are noisy.</div><div class="scroll" id="steps"></div></section>
+  <section class="card"><h2>Sessions</h2><div class="scroll" id="sessions"></div></section>
+  <section class="card"><h2>Most expensive prompts</h2><div class="scroll" id="prompts"></div></section>
+  <section class="card"><h2>Limit windows, and what the same use comes to on each plan</h2><div class="scroll" id="windows"></div></section>
+  <section class="card"><h2>Long-term token ledger (400 days, every model)</h2><div class="chart" id="dailyChart"></div><div class="scroll" id="months"></div></section>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+const D = /*__DATA__*/null;
+// request row: ts, session, prompt, agent, model, effort, skill, mcp, in, out, cacheRead, cw5m, cw1h, usd, planUsd, host, fast
+const TS=0,SE=1,PR=2,AG=3,MO=4,EF=5,SK=6,MC=7,IN=8,OUT=9,CR=10,C5=11,C1=12,USD=13,PUSD=14,HO=15;
+const R = D.reqs, P = D.periods, HOURMS = 3600e3, DAYMS = 864e5;
+const COLORS = ['#c96442','#3d7ab8','#5a9e4b','#b5852b','#8a5cb8','#2f9c9c','#c4497f','#7a7a72','#9c6b3d','#4b5fc4'];
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const n0 = v => Math.round(v).toLocaleString();
+const n1 = v => (Math.round(v * 10) / 10).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+const tok = v => v >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(Math.round(v));
+const usd = v => '$' + (v >= 100 ? n0(v) : v.toFixed(2));
+const loc = v => D.currency + ' ' + (v >= 100 ? n0(v) : v.toFixed(2));
+const pad = n => String(n).padStart(2, '0');
+const dstr = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const tstr = ms => { const d = new Date(ms); return `${dstr(ms)} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const hrs = h => h >= 48 ? n1(h / 24) + ' days' : n1(h) + ' h';
+
+// per-request plan period and estimated share of each limit
+const pIx = new Int8Array(R.length), est7 = new Float64Array(R.length), est5 = new Float64Array(R.length);
+function periodOf(ts) { for (let i = 0; i < P.length; i++) if (ts >= P[i].from && (P[i].to == null || ts < P[i].to)) return i; return P.length - 1; }
+function per1(pi, kind) { const c = (P[pi].cap || {})[kind]; return c && c.usdPer1 ? c.usdPer1 : null; }
+R.forEach((r, i) => { const pi = periodOf(r[TS]); pIx[i] = pi; const a = per1(pi, 'seven_day'), b = per1(pi, 'five_hour'); est7[i] = a ? r[PUSD] / a : 0; est5[i] = b ? r[PUSD] / b : 0; });
+const tokens = r => r[IN] + r[OUT] + r[CR] + r[C5] + r[C1];
+const sess = i => D.sessions[i] || ['?', '?', -1, '', ''];
+const projOf = r => sess(r[SE])[1];
+const agentName = r => r[AG] < 0 ? 'main' : 'subagent: ' + D.agents[r[AG]][0];
+
+// ---------------------------------------------------------------- filters
+const F = { from: 0, to: Infinity, plan: -1, host: -1, proj: '' };
+const firstTs = R.length ? R[0][TS] : Date.now();
+function lowerBound(ts) { let lo = 0, hi = R.length; while (lo < hi) { const m = (lo + hi) >> 1; if (R[m][TS] < ts) lo = m + 1; else hi = m; } return lo; }
+function rowsInRange() {
+  const out = [];
+  for (let i = lowerBound(F.from); i < R.length && R[i][TS] < F.to; i++) {
+    const r = R[i];
+    if (F.plan >= 0 && pIx[i] !== F.plan) continue;
+    if (F.host >= 0 && r[HO] !== F.host) continue;
+    if (F.proj && projOf(r) !== F.proj) continue;
+    out.push(i);
+  }
+  return out;
+}
+function setRange(a, b) { $('#from').value = dstr(a); $('#to').value = dstr(b); readFilters(); }
+function readFilters() {
+  const f = $('#from').value, t = $('#to').value;
+  F.from = f ? new Date(f + 'T00:00').getTime() : 0;
+  F.to = t ? new Date(t + 'T00:00').getTime() + DAYMS : Infinity;
+  F.plan = +$('#plan').value; F.host = +$('#host').value; F.proj = $('#proj').value;
+  render();
+}
+function initFilters() {
+  $('#plan').innerHTML = '<option value="-1">all</option>' + P.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join('');
+  $('#host').innerHTML = '<option value="-1">all</option>' + D.hosts.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join('');
+  const projs = [...new Set(D.sessions.map(s => s[1]))].sort();
+  $('#proj').innerHTML = '<option value="">all</option>' + projs.map(p => `<option>${esc(p)}</option>`).join('');
+  const now = Date.now();
+  const presets = [['24 h', now - DAYMS, now], ['7 days', now - 7 * DAYMS, now], ['30 days', now - 30 * DAYMS, now], ['all', firstTs, now]];
+  if (D.upgrade) presets.push(['before ' + P[1].name, Math.max(firstTs, D.upgrade - 30 * DAYMS), D.upgrade], ['since ' + P[1].name, D.upgrade, now]);
+  $('#presets').innerHTML = presets.map((p, i) => `<button data-i="${i}">${esc(p[0])}</button>`).join(' ');
+  $('#presets').onclick = e => { const p = presets[e.target.dataset.i]; if (p) setRange(p[1], p[2]); };
+  ['#from', '#to', '#plan', '#host', '#proj'].forEach(s => $(s).onchange = readFilters);
+  $('#from').value = dstr(firstTs); $('#to').value = dstr(now);
+}
+
+// ---------------------------------------------------------------- tooltip
+const tip = $('#tip');
+function showTip(e, html) { tip.innerHTML = html; tip.style.display = 'block'; const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (e.clientY + 14) + 'px'; }
+function hideTip() { tip.style.display = 'none'; }
+
+// ---------------------------------------------------------------- charts
+function barChart(el, labels, series, o = {}) {
+  const W = Math.max(el.clientWidth || 900, 300), H = o.h || 260, L = 56, B = 34, T = 10, Rr = 8;
+  const n = labels.length;
+  if (!n) { el.innerHTML = '<div class="mute">No data in this range.</div>'; return; }
+  const tot = labels.map((_, i) => series.reduce((s, x) => s + (x.values[i] || 0), 0));
+  const max = Math.max(...tot, 1e-9);
+  const bw = (W - L - Rr) / n, y = v => T + (H - T - B) * (1 - v / max);
+  let s = `<svg viewBox="0 0 ${W} ${H}" height="${H}">`;
+  for (let k = 0; k <= 4; k++) { const v = max * k / 4, yy = y(v); s += `<line x1="${L}" x2="${W - Rr}" y1="${yy}" y2="${yy}" stroke="var(--line)"/><text x="${L - 6}" y="${yy + 4}" text-anchor="end" font-size="11" fill="var(--mute)">${esc(o.fmt ? o.fmt(v) : n1(v))}</text>`; }
+  for (let i = 0; i < n; i++) {
+    let acc = 0;
+    series.forEach((x, j) => { const v = x.values[i] || 0; if (v <= 0) return; const y0 = y(acc), y1 = y(acc + v); acc += v; s += `<rect x="${L + i * bw + bw * 0.08}" y="${y1}" width="${Math.max(bw * 0.84, 0.6)}" height="${Math.max(y0 - y1, 0.5)}" fill="${x.color || COLORS[j % COLORS.length]}"/>`; });
+  }
+  const every = Math.ceil(n / Math.max(1, Math.floor((W - L) / 80)));
+  for (let i = 0; i < n; i += every) s += `<text x="${L + i * bw + bw / 2}" y="${H - B + 16}" text-anchor="middle" font-size="11" fill="var(--mute)">${esc(o.short ? o.short(labels[i]) : labels[i])}</text>`;
+  (o.marks || []).forEach(m => { if (m.i >= 0 && m.i < n) s += `<line x1="${L + m.i * bw}" x2="${L + m.i * bw}" y1="${T}" y2="${H - B}" stroke="var(--accent)" stroke-dasharray="4 3"/><text x="${L + m.i * bw + 4}" y="${T + 10}" font-size="11" fill="var(--accent)">${esc(m.text)}</text>`; });
+  s += `<rect x="${L}" y="0" width="${W - L - Rr}" height="${H - B}" fill="transparent" class="hit"/></svg>`;
+  el.innerHTML = s + (series.length > 1 ? '<div class="legend">' + series.map((x, j) => `<span><i style="background:${x.color || COLORS[j % COLORS.length]}"></i>${esc(x.name)}</span>`).join('') + '</div>' : '');
+  const hit = el.querySelector('.hit'), svg = el.querySelector('svg');
+  hit.onmousemove = e => {
+    const rect = svg.getBoundingClientRect(), x = (e.clientX - rect.left) * W / rect.width, i = Math.floor((x - L) / bw);
+    if (i < 0 || i >= n) return hideTip();
+    const rows = series.map((x, j) => [x, x.values[i] || 0, j]).filter(z => z[1]).sort((a, b) => b[1] - a[1]);
+    showTip(e, `<b>${esc(labels[i])}</b><br>` + (rows.length > 1 ? `total ${esc(o.fmt ? o.fmt(tot[i]) : n1(tot[i]))}<br>` : '') + rows.slice(0, 12).map(([x, v, j]) => `<i style="display:inline-block;width:8px;height:8px;background:${x.color || COLORS[j % COLORS.length]}"></i> ${esc(x.name)}: ${esc(o.fmt ? o.fmt(v) : n1(v))}`).join('<br>') + (o.extra ? o.extra(i) : ''));
+  };
+  hit.onmouseleave = hideTip;
+}
+
+function lineChart(el, series, o) {
+  const W = Math.max(el.clientWidth || 900, 300), H = o.h || 280, L = 44, B = 34, T = 12, Rr = 10;
+  const x0 = o.xmin, x1 = Math.max(o.xmax, o.xmin + 1);
+  const x = v => L + (W - L - Rr) * (v - x0) / (x1 - x0), y = v => T + (H - T - B) * (1 - v / 100);
+  let s = `<svg viewBox="0 0 ${W} ${H}" height="${H}">`;
+  [0, 25, 50, 75, 100].forEach(v => s += `<line x1="${L}" x2="${W - Rr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute)">${v}%</text>`);
+  const span = x1 - x0, ticks = 6;
+  for (let k = 0; k <= ticks; k++) { const t = x0 + span * k / ticks; s += `<text x="${x(t)}" y="${H - B + 16}" text-anchor="middle" font-size="11" fill="var(--mute)">${esc(span > 3 * DAYMS ? dstr(t).slice(5) : tstr(t).slice(5))}</text>`; }
+  (o.vlines || []).forEach(v => { if (v.x >= x0 && v.x <= x1) s += `<line x1="${x(v.x)}" x2="${x(v.x)}" y1="${T}" y2="${H - B}" stroke="var(--accent)" stroke-dasharray="4 3"/><text x="${x(v.x) + 4}" y="${T + 10}" font-size="11" fill="var(--accent)">${esc(v.text)}</text>`; });
+  series.forEach(se => {
+    let d = '', prev = null;
+    se.points.forEach(p => { const X = x(p[0]), Y = y(p[1]); if (!prev || p[0] - prev[0] > (se.gap || Infinity)) d += `M${X},${Y}`; else d += `H${X}V${Y}`; prev = p; });
+    s += `<path d="${d}" fill="none" stroke="${se.color}" stroke-width="1.8"/>`;
+  });
+  s += `<rect x="${L}" y="0" width="${W - L - Rr}" height="${H - B}" fill="transparent" class="hit"/></svg>`;
+  el.innerHTML = s + '<div class="legend">' + series.map(se => `<span><i style="background:${se.color}"></i>${esc(se.name)}</span>`).join('') + '</div>';
+  const hit = el.querySelector('.hit'), svg = el.querySelector('svg');
+  hit.onmousemove = e => {
+    const rect = svg.getBoundingClientRect(), t = x0 + ((e.clientX - rect.left) * W / rect.width - L) / (W - L - Rr) * (x1 - x0);
+    const lines = series.map(se => { let best = null; for (const p of se.points) { if (p[0] <= t) best = p; else break; } return best ? `${esc(se.name)}: <b>${best[1]}%</b> <span class="mute">(read ${esc(tstr(best[0]))}${best[2] ? ', resets ' + esc(tstr(best[2])) : ''})</span>` : ''; }).filter(Boolean);
+    showTip(e, `<b>${esc(tstr(t))}</b><br>${lines.join('<br>')}`);
+  };
+  hit.onmouseleave = hideTip;
+}
+
+// ---------------------------------------------------------------- tables
+function table(el, cols, rows, o = {}) {
+  let sortK = o.sort ?? null, dir = -1, limit = o.limit || 200;
+  function draw() {
+    let rs = rows.slice();
+    if (sortK != null) rs.sort((a, b) => { const A = a[sortK], B = b[sortK]; return (A > B ? 1 : A < B ? -1 : 0) * dir; });
+    const shown = rs.slice(0, limit);
+    el.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th class="${c.l ? 'l' : ''}" data-i="${i}">${esc(c.h)}</th>`).join('')}</tr></thead><tbody>` +
+      shown.map(r => '<tr>' + cols.map((c, i) => `<td class="${c.wrap ? 'wrap' : c.l ? 'l' : ''}">${c.f ? c.f(r[i], r) : esc(r[i])}</td>`).join('') + '</tr>').join('') +
+      `</tbody></table>` + (rs.length > limit ? `<button class="more">show ${Math.min(rs.length - limit, 500)} more of ${rs.length - limit}</button>` : '');
+    el.querySelectorAll('th').forEach(th => th.onclick = () => { const i = +th.dataset.i; if (sortK === i) dir = -dir; else { sortK = i; dir = -1; } draw(); });
+    const m = el.querySelector('.more'); if (m) m.onclick = () => { limit += 500; draw(); };
+  }
+  draw();
+}
+
+// ---------------------------------------------------------------- the plan check (all data, not the filters)
+function latest(kind) { let s = null; for (const x of D.limits) if (x[1] === kind) s = x; return s; }
+function verdict() {
+  const el = $('#verdict'), now = Date.now(), fx = D.fx;
+  const before = P[0], after = P[P.length - 1];
+  const c7 = P.map((_, i) => per1(i, 'seven_day')), c5 = P.map((_, i) => per1(i, 'five_hour'));
+  const l5 = latest(0), l7 = latest(1);
+  // pace: the last 7 days of requests
+  let week = 0; for (let i = lowerBound(now - 7 * DAYMS); i < R.length; i++) week += R[i][PUSD];
+  let month = 0, mFrom = Math.max(firstTs, now - 30 * DAYMS); for (let i = lowerBound(mFrom); i < R.length; i++) month += R[i][USD];
+  const mDays = Math.max(1, (now - mFrom) / DAYMS), monthly = month / mDays * 30.4;
+  let h = `<h2>Is ${esc(after.name)} worth it?</h2><table style="width:auto;margin-bottom:12px"><thead><tr><th class="l">Plan</th><th class="l">From</th><th>Price / month</th><th>1% of 7-day limit</th><th>Full 7-day limit</th><th>1% of 5-hour</th><th>Full 5-hour</th><th>Readings used</th></tr></thead><tbody>`;
+  P.forEach((p, i) => {
+    h += `<tr><td class="l"><b>${esc(p.name)}</b> ${p.tier ? `<span class="pill">${esc(p.tier)}</span>` : ''}</td><td class="l">${p.from ? esc(tstr(p.from)) : 'start of data'}${p.from && !D.upgradeGiven && i === 1 ? ' <span class="mute">(found in readings)</span>' : ''}</td>` +
+      `<td>${p.price != null ? loc(p.price) : '<span class="warn">not set</span>'}</td>` +
+      `<td>${c7[i] ? usd(c7[i]) : '–'}</td><td>${c7[i] ? usd(c7[i] * 100) + ' <span class="mute">(' + loc(c7[i] * 100 * fx) + ')</span>' : '–'}</td>` +
+      `<td>${c5[i] ? usd(c5[i]) : '–'}</td><td>${c5[i] ? usd(c5[i] * 100) : '–'}</td><td>${p.cap?.seven_day?.points || 0} pts of 7d, ${p.cap?.five_hour?.points || 0} of 5h</td></tr>`;
+  });
+  h += `</tbody></table><ul class="verdict">`;
+  if (P.length > 1 && c7[0] && c7[P.length - 1]) {
+    const ratio = c7[P.length - 1] / c7[0];
+    h += `<li>${esc(after.name)}'s 7-day limit holds about <b>${n1(ratio)}×</b> the usage of ${esc(before.name)}'s` + (c5[0] && c5[P.length - 1] ? `; its 5-hour limit about <b>${n1(c5[P.length - 1] / c5[0])}×</b>.` : '.') + `</li>`;
+    if (before.price && after.price) h += `<li>It costs <b>${n1(after.price / before.price)}×</b> as much (${loc(after.price)} vs ${loc(before.price)}), so each % of headroom costs ${ratio >= after.price / before.price ? '<span class="good">less</span>' : '<span class="bad">more</span>'} than on ${esc(before.name)}.</li>`;
+  }
+  if (l7 && c7[P.length - 1]) {
+    // the current 7-day window (from the plan change if that came later): how far in, and the pace
+    const start = Math.max(l7[3] - 7 * DAYMS, after.from || 0), el = Math.max(now - start, HOURMS), left = Math.max(l7[3] - now, 0);
+    let cur = 0; for (let i = lowerBound(start); i < R.length; i++) cur += R[i][PUSD];
+    const pace = l7[2] * (el + left) / el;
+    h += `<li>This ${esc(after.name)} week (since ${esc(tstr(start))}): <b>${l7[2]}%</b> used after ${hrs(el / HOURMS)}, on pace for <b class="${pace > 100 ? 'bad' : pace > 85 ? 'warn' : 'good'}">${n0(pace)}%</b> by the reset on ${esc(tstr(l7[3]))}.` +
+      (P.length > 1 && c7[0] ? ` The same use (${usd(cur)} API-equivalent) would already be <b class="${cur / c7[0] > 100 ? 'bad' : ''}">${n0(cur / c7[0])}%</b> of a ${esc(before.name)} week, on pace for ${n0(cur / c7[0] * (el + left) / el)}%.` : '') + `</li>`;
+  }
+  if (c7[0] && week) {
+    h += `<li>Your last 7 days of Claude Code use (any plan) came to <b>${usd(week)}</b> API-equivalent: ${n0(week / c7[0])}% of a ${esc(before.name)} week` + (P.length > 1 && c7[P.length - 1] ? `, ${n0(week / c7[P.length - 1])}% of an ${esc(after.name)} week.` : '.') + `</li>`;
+  }
+  if (l7 && l5 && l7[0] - l5[0] > 12 * HOURMS) h += `<li class="warn">No 5-hour reading since ${esc(tstr(l5[0]))}, while 7-day readings carry on: Claude Code stopped reporting a 5-hour window` + (after.from && l5[0] > after.from ? ` on ${esc(after.name)} — it looks like ${esc(after.name)} has no separate 5-hour limit.` : '.') + `</li>`;
+  // windows: how often would the cheaper plan have run out, and for how long
+  const ws = D.windows.filter(w => w.covered && w.est[before.name] != null);
+  ['seven_day', 'five_hour'].forEach(kind => {
+    const k = ws.filter(w => w.kind === kind);
+    if (!k.length) return;
+    const over = k.filter(w => w.est[before.name] >= 100), lock = over.reduce((s, w) => s + (w.lockHours[before.name] || 0), 0);
+    const name = kind === 'seven_day' ? '7-day' : '5-hour';
+    h += `<li>Of ${k.length} ${name} windows in the ledger, <b class="${over.length ? 'bad' : 'good'}">${over.length}</b> would have hit ${esc(before.name)}'s limit` + (over.length ? `, locking you out for about <b>${hrs(lock)}</b> in total.` : '.') + `</li>`;
+  });
+  const hitMax = D.windows.filter(w => w.plan === before.name && w.peak >= 95);
+  if (hitMax.length) h += `<li>While you were on ${esc(before.name)}, ${hitMax.length} window${hitMax.length > 1 ? 's' : ''} reached 95%+ (${hitMax.map(w => (w.kind === 'seven_day' ? '7d ' : '5h ') + w.peak + '% by ' + dstr(w.reset)).join(', ')}).</li>`;
+  h += `<li>Claude Code use over the last ${n0(mDays)} days works out to about <b>${usd(monthly)}</b> a month at API list prices (${loc(monthly * fx)})` + (after.price ? ` — <b>${n1(monthly * fx / after.price)}×</b> what ${esc(after.name)} costs you.` : '.') + `</li>`;
+  if (l7) h += `<li>Now: 7-day at <b>${l7[2]}%</b> (${100 - l7[2]}% left, resets ${esc(tstr(l7[3]))})` + (l5 && l5[3] > now ? `, 5-hour at <b>${l5[2]}%</b> (${100 - l5[2]}% left, resets ${esc(tstr(l5[3]))})` : '') + `.</li>`;
+  const irrF = (D.irr && D.irr.findings) || [];
+  const big = irrF.filter(f => f.sev !== 'info' && f.ts > now - 14 * DAYMS).length;
+  irrF.filter(f => f.sev === 'info').forEach(f => h += `<li>${esc(f.text)}</li>`);
+  h += `<li>${big ? `<span class="warn"><b>${big}</b> irregular stretch${big > 1 ? 'es' : ''} in the last 14 days</span> where the same use moved the % noticeably more or less than usual` : 'No irregular stretches in the last 14 days'} — see <a href="#irrCard">Irregularities</a>.</li>`;
+  h += `</ul><div class="mute">API-equivalent $ is what the same tokens would cost on the API at list prices (USD; ${D.currency} at ${D.fx} per USD). "1% of the limit" is learned by matching limit readings to the requests made between them, so it gets more accurate with more readings; claude.ai chat use counts against the limit but isn't in the ledger, which makes these estimates slightly generous. Plan prices and the exchange rate are set at the top of tools/usage-report.py.</div>`;
+  el.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- the filtered views
+let remaining = false;
+$('#remain').onclick = () => { remaining = !remaining; $('#remain').textContent = remaining ? 'show % used' : 'show % remaining'; $('#remain').classList.toggle('on', remaining); drawLimits(); };
+function drawLimits() {
+  const from = F.from || (D.limits[0] || [firstTs])[0], to = Math.min(F.to, Date.now());
+  const pts = k => D.limits.filter(s => s[1] === k && s[0] >= from && s[0] <= to).map(s => [s[0], remaining ? 100 - s[2] : s[2], s[3]]);
+  lineChart($('#limitChart'), [
+    { name: '7-day ' + (remaining ? 'remaining' : 'used'), color: '#3d7ab8', points: pts(1), gap: 12 * HOURMS },
+    { name: '5-hour ' + (remaining ? 'remaining' : 'used'), color: '#c96442', points: pts(0), gap: 5 * HOURMS },
+  ], { xmin: from, xmax: to, vlines: D.upgrade ? [{ x: D.upgrade, text: P[1]?.name || 'plan change' }] : [] });
+}
+
+const METRICS = {
+  usd: ['API-equivalent $ (USD)', i => R[i][USD], usd],
+  local: [`API-equivalent ${D.currency}`, i => R[i][USD] * D.fx, loc],
+  tokens: ['tokens (all)', i => tokens(R[i]), tok],
+  input: ['input tokens', i => R[i][IN], tok],
+  output: ['output tokens', i => R[i][OUT], tok],
+  cacheRead: ['cache read tokens', i => R[i][CR], tok],
+  cacheWrite: ['cache write tokens', i => R[i][C5] + R[i][C1], tok],
+  requests: ['requests', i => 1, n0],
+  est7: ['estimated % of 7-day limit (from tokens)', i => est7[i], v => n1(v) + '%'],
+  est5: ['estimated % of 5-hour limit (from tokens)', i => est5[i], v => n1(v) + '%'],
+  step7: ['measured 7-day % rise (readings)', null, v => n1(v) + '%'],
+  step5: ['measured 5-hour % rise (readings)', null, v => n1(v) + '%'],
+};
+$('#metric').innerHTML = Object.entries(METRICS).map(([k, m]) => `<option value="${k}">${esc(m[0])}</option>`).join('');
+['#gran', '#metric', '#split'].forEach(s => $(s).onchange = () => drawTime(rowsInRange()));
+
+function bucketOf(ms, g) {
+  const d = new Date(ms);
+  if (g === 'month') return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  if (g === 'week') { const m = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return 'wk ' + dstr(m.getTime()); }
+  if (g === 'day') return dstr(ms);
+  if (g === 'hour') return `${dstr(ms)} ${pad(d.getHours())}:00`;
+  return tstr(ms);
+}
+function bucketSeq(a, b, g) {
+  if (g === 'minute') return null;
+  const out = [], d = new Date(a);
+  if (g === 'month') d.setDate(1);
+  d.setHours(g === 'hour' ? d.getHours() : 0, 0, 0, 0);
+  if (g === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  let guard = 0;
+  while (d.getTime() <= b && guard++ < 20000) {
+    out.push(bucketOf(d.getTime(), g));
+    if (g === 'month') d.setMonth(d.getMonth() + 1); else if (g === 'week') d.setDate(d.getDate() + 7); else if (g === 'day') d.setDate(d.getDate() + 1); else d.setHours(d.getHours() + 1);
+  }
+  return out;
+}
+function catOf(i, split) {
+  const r = R[i];
+  if (split === 'model') return D.models[r[MO]];
+  if (split === 'agent') return r[AG] < 0 ? 'main' : 'subagents';
+  if (split === 'effort') return r[EF] < 0 ? '(default)' : D.efforts[r[EF]];
+  if (split === 'project') return projOf(r);
+  if (split === 'host') return D.hosts[r[HO]];
+  if (split === 'plan') return P[pIx[i]].name;
+  return 'all';
+}
+function drawTime(ix) {
+  const g = $('#gran').value, mk = $('#metric').value, split = $('#split').value, M = METRICS[mk];
+  const cells = new Map(), cats = new Map();
+  let lo = Infinity, hi = -Infinity;
+  if (M[1]) {
+    for (const i of ix) {
+      const b = bucketOf(R[i][TS], g), c = catOf(i, split), v = M[1](i);
+      lo = Math.min(lo, R[i][TS]); hi = Math.max(hi, R[i][TS]);
+      cats.set(c, (cats.get(c) || 0) + v);
+      const m = cells.get(b) || new Map(); m.set(c, (m.get(c) || 0) + v); cells.set(b, m);
+    }
+  } else {
+    const want = mk === 'step7' ? 1 : 0;
+    for (const s of D.steps) {
+      if (s[2] !== want || s[8] || s[4] <= s[3] || s[1] < F.from || s[1] >= F.to) continue;
+      if (F.plan >= 0 && periodOf(s[1]) !== F.plan) continue;
+      const b = bucketOf(s[1], g), v = s[4] - s[3];
+      lo = Math.min(lo, s[1]); hi = Math.max(hi, s[1]);
+      cats.set('all', (cats.get('all') || 0) + v);
+      const m = cells.get(b) || new Map(); m.set('all', (m.get('all') || 0) + v); cells.set(b, m);
+    }
+  }
+  let labels = bucketSeq(lo, hi, g) || [...cells.keys()].sort();
+  if (labels.length > 3000) labels = labels.slice(-3000);
+  const top = [...cats.entries()].sort((a, b) => b[1] - a[1]).map(c => c[0]);
+  const keep = top.slice(0, 9), rest = new Set(top.slice(9));
+  const series = keep.map((c, j) => ({ name: c, values: labels.map(l => (cells.get(l) || new Map()).get(c) || 0) }));
+  if (rest.size) series.push({ name: 'other', color: '#999', values: labels.map(l => { let s = 0; (cells.get(l) || new Map()).forEach((v, c) => { if (rest.has(c)) s += v; }); return s; }) });
+  const marks = D.upgrade ? [{ i: labels.indexOf(bucketOf(D.upgrade, g)), text: P[1]?.name || 'plan change' }] : [];
+  barChart($('#timeChart'), labels, series, { fmt: M[2], marks, short: l => g === 'minute' || g === 'hour' ? l.slice(5) : g === 'day' ? l.slice(5) : l });
+}
+
+function drawHeat(ix) {
+  const grid = Array.from({ length: 7 }, () => new Array(24).fill(0)), days = new Set();
+  for (const i of ix) { const d = new Date(R[i][TS]); grid[(d.getDay() + 6) % 7][d.getHours()] += R[i][USD]; days.add(dstr(R[i][TS])); }
+  const max = Math.max(...grid.flat(), 1e-9), names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  $('#heatNote').textContent = `(API-equivalent $ by weekday and hour, ${days.size} active days)`;
+  $('#heat').innerHTML = '<table class="heat" style="width:auto"><tr><td></td>' + [...Array(24).keys()].map(h => `<td class="mute">${h}</td>`).join('') + '</tr>' +
+    grid.map((row, d) => `<tr><td class="mute" style="width:40px">${names[d]}</td>` + row.map((v, h) => `<td title="${names[d]} ${pad(h)}:00 — ${usd(v)}" style="background:rgba(201,100,66,${(v / max).toFixed(3)})">${v / max > 0.5 ? n0(v) : ''}</td>`).join('') + '</tr>').join('') + '</table>';
+}
+
+function drawBreakdowns(ix) {
+  const groups = [
+    ['Model', i => D.models[R[i][MO]]],
+    ['Effort', i => R[i][EF] < 0 ? '(default)' : D.efforts[R[i][EF]]],
+    ['Main vs subagents', i => agentName(R[i])],
+    ['Project', i => projOf(R[i])],
+    ['Skill in use', i => R[i][SK] < 0 ? '(none)' : D.skills[R[i][SK]]],
+    ['MCP server in use', i => R[i][MC] < 0 ? '(none)' : D.mcp[R[i][MC]]],
+    ['Machine', i => D.hosts[R[i][HO]]],
+    ['Where it ran', i => sess(R[i][SE])[3] || '(unknown)'],
+    ['Plan', i => P[pIx[i]].name],
+  ];
+  const el = $('#breakdowns'); el.innerHTML = '';
+  let total = 0; for (const i of ix) total += R[i][USD];
+  groups.forEach(([name, key]) => {
+    const m = new Map();
+    for (const i of ix) { const k = key(i), r = R[i]; const a = m.get(k) || [k, 0, 0, 0, 0, 0, 0, 0, 0]; a[1]++; a[2] += r[IN]; a[3] += r[OUT]; a[4] += r[CR]; a[5] += r[C5] + r[C1]; a[6] += r[USD]; a[7] += est7[i]; a[8] += est5[i]; m.set(k, a); }
+    const rows = [...m.values()].map(a => [...a, total ? a[6] / total * 100 : 0]);
+    const card = document.createElement('section'); card.className = 'card'; card.innerHTML = `<h2>${esc(name)}</h2><div class="scroll" style="max-height:340px"></div>`; el.appendChild(card);
+    table(card.querySelector('div'), [
+      { h: name, l: 1 }, { h: 'Requests', f: n0 }, { h: 'Input', f: tok }, { h: 'Output', f: tok }, { h: 'Cache read', f: tok }, { h: 'Cache write', f: tok },
+      { h: 'API $', f: usd }, { h: '≈ % of 7d', f: v => n1(v) }, { h: '≈ % of 5h', f: v => n0(v) }, { h: 'Share', f: v => n1(v) + '%' },
+    ], rows, { sort: 6, limit: 50 });
+  });
+}
+
+function summarize(i0, i1) {
+  const ss = new Map(), ms = new Map();
+  let u = 0, t = 0, sub = 0, out = 0;
+  for (let i = i0; i < i1; i++) {
+    const r = R[i]; u += r[USD]; t += tokens(r); out += r[OUT]; if (r[AG] >= 0) sub += r[USD];
+    ss.set(r[SE], (ss.get(r[SE]) || 0) + r[USD]); const mn = D.models[r[MO]]; ms.set(mn, (ms.get(mn) || 0) + r[USD]);
+  }
+  const topS = [...ss.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, v]) => `${esc(sess(s)[0])} <span class="mute">(${esc(sess(s)[1])}, ${usd(v)})</span>`).join('<br>');
+  const topM = [...ms.entries()].sort((a, b) => b[1] - a[1]).map(([m, v]) => `<span class="pill">${esc(m.replace('claude-', ''))} ${u ? n0(v / u * 100) : 0}%</span>`).join('');
+  return { u, t, out, sub, n: i1 - i0, topS, topM, sessions: ss.size };
+}
+
+function drawSteps() {
+  const rows = [];
+  for (const s of D.steps) {
+    if (s[1] < F.from || s[1] >= F.to) continue;
+    if (F.plan >= 0 && periodOf(s[1]) !== F.plan) continue;
+    const sm = summarize(s[6], s[7]), dp = s[8] ? null : s[4] - s[3];
+    rows.push([s[1], s[2] ? '7-day' : '5-hour', s[3], s[4], dp, (s[1] - s[0]) / 60000, sm.n, sm.t, sm.u, dp > 0 ? sm.u / dp : null, sm.u ? sm.sub / sm.u * 100 : 0, sm.topM, sm.topS, s[5]]);
+  }
+  table($('#steps'), [
+    { h: 'When', l: 1, f: v => esc(tstr(v)) }, { h: 'Limit', l: 1 },
+    { h: 'From', f: v => v + '%' }, { h: 'To', f: (v, r) => `${v}% <span class="mute">(${100 - v}% left)</span>` },
+    { h: 'Change', f: v => v == null ? '<span class="pill">reset</span>' : `<b class="${v > 0 ? '' : 'mute'}">${v > 0 ? '+' : ''}${v}</b>` },
+    { h: 'Since last change', f: v => v < 90 ? n0(v) + ' min' : hrs(v / 60) },
+    { h: 'Requests', f: n0 }, { h: 'Tokens', f: tok }, { h: 'API $', f: usd }, { h: '$ per 1%', f: v => v == null ? '–' : usd(v) },
+    { h: 'Subagent $', f: v => n0(v) + '%' }, { h: 'Models', l: 1, f: v => v }, { h: 'What was running', wrap: 1, f: v => v || '<span class="mute">nothing in the ledger (claude.ai chat, or another machine not synced)</span>' },
+    { h: 'Resets', l: 1, f: v => esc(tstr(v)) },
+  ], rows, { sort: 0, limit: 200 });
+}
+
+function drawSessions(ix) {
+  const m = new Map();
+  for (const i of ix) {
+    const r = R[i], a = m.get(r[SE]) || { s: r[SE], first: r[TS], last: r[TS], n: 0, t: 0, out: 0, u: 0, e7: 0, sub: 0, agents: new Set(), models: new Map(), prompts: new Set(), efforts: new Set() };
+    a.last = r[TS]; a.n++; a.t += tokens(r); a.out += r[OUT]; a.u += r[USD]; a.e7 += est7[i]; if (r[AG] >= 0) { a.sub += r[USD]; a.agents.add(r[AG]); }
+    const mn = D.models[r[MO]].replace('claude-', ''); a.models.set(mn, (a.models.get(mn) || 0) + r[USD]); if (r[PR] >= 0) a.prompts.add(r[PR]); a.efforts.add(r[EF] < 0 ? 'default' : D.efforts[r[EF]]);
+    m.set(r[SE], a);
+  }
+  const rows = [...m.values()].map(a => { const s = sess(a.s); return [s[0], s[1], D.hosts[s[2]] || '', a.first, (a.last - a.first) / 60000, a.prompts.size, a.n, a.agents.size, a.t, a.out, a.u, a.e7, a.u ? a.sub / a.u * 100 : 0, [...a.models.entries()].sort((x, y) => y[1] - x[1]).map(x => x[0]).join(', '), [...a.efforts].join(', ')]; });
+  table($('#sessions'), [
+    { h: 'Session', l: 1, wrap: 1 }, { h: 'Project', l: 1 }, { h: 'Machine', l: 1 }, { h: 'Started', l: 1, f: v => esc(tstr(v)) }, { h: 'Length', f: v => v < 90 ? n0(v) + ' min' : hrs(v / 60) },
+    { h: 'Prompts', f: n0 }, { h: 'Requests', f: n0 }, { h: 'Subagents', f: n0 }, { h: 'Tokens', f: tok }, { h: 'Output', f: tok }, { h: 'API $', f: usd },
+    { h: '≈ % of 7d', f: n1 }, { h: 'Subagent $', f: v => n0(v) + '%' }, { h: 'Models', l: 1 }, { h: 'Effort', l: 1 },
+  ], rows, { sort: 10, limit: 100 });
+}
+
+function drawPrompts(ix) {
+  const m = new Map();
+  for (const i of ix) {
+    const r = R[i]; if (r[PR] < 0) continue;
+    const a = m.get(r[PR]) || { p: r[PR], n: 0, u: 0, t: 0, e7: 0, e5: 0, sub: 0, last: r[TS] };
+    a.n++; a.u += r[USD]; a.t += tokens(r); a.e7 += est7[i]; a.e5 += est5[i]; if (r[AG] >= 0) a.sub++; a.last = r[TS]; m.set(r[PR], a);
+  }
+  const rows = [...m.values()].map(a => { const p = D.prompts[a.p]; return [p[2], p[0], sess(p[1])[0], sess(p[1])[1], (a.last - p[2]) / 60000, a.n, a.sub, a.t, a.u, a.e7, a.e5]; });
+  table($('#prompts'), [
+    { h: 'When', l: 1, f: v => esc(tstr(v)) }, { h: 'Prompt', wrap: 1 }, { h: 'Session', l: 1, wrap: 1 }, { h: 'Project', l: 1 }, { h: 'Ran for', f: v => v < 90 ? n0(Math.max(v, 0)) + ' min' : hrs(v / 60) },
+    { h: 'Requests', f: n0 }, { h: 'by subagents', f: n0 }, { h: 'Tokens', f: tok }, { h: 'API $', f: usd }, { h: '≈ % of 7d', f: n1 }, { h: '≈ % of 5h', f: n1 },
+  ], rows, { sort: 8, limit: 100 });
+}
+
+function drawWindows() {
+  const names = P.map(p => p.name);
+  const rows = D.windows.filter(w => w.reset >= F.from && w.start < F.to).map(w => [w.reset, w.kind === 'seven_day' ? '7-day' : '5-hour', w.plan, w.peak, w.usd, ...names.map(n => w.est[n]), ...names.map(n => w.lockHours[n]), w.open, w.covered]);
+  table($('#windows'), [
+    { h: 'Resets', l: 1, f: (v, r) => esc(tstr(v)) + (r[r.length - 2] ? ' <span class="pill">current</span>' : '') }, { h: 'Limit', l: 1 }, { h: 'Plan', l: 1 },
+    { h: 'Highest reading', f: v => v + '%' }, { h: 'API $ in window', f: (v, r) => r[r.length - 1] ? usd(v) : '<span class="mute">before ledger</span>' },
+    ...names.map(n => ({ h: `≈ % on ${n}`, f: v => v == null ? '–' : `<span class="${v >= 100 ? 'bad' : v >= 85 ? 'warn' : ''}">${n0(v)}%</span>` })),
+    ...names.map(n => ({ h: `locked out on ${n}`, f: v => v == null ? '' : `<span class="bad">${hrs(v)}</span>` })),
+  ], rows, { sort: 0, limit: 100 });
+}
+
+function drawDaily() {
+  const days = D.daily.filter(d => { const t = new Date(d[0] + 'T12:00').getTime(); return t >= F.from && t < F.to; });
+  barChart($('#dailyChart'), days.map(d => d[0]), [{ name: 'API $', values: days.map(d => d[6]) }], { fmt: usd, short: l => l.slice(5), h: 200,
+    marks: D.upgrade ? [{ i: days.findIndex(d => d[0] >= dstr(D.upgrade)), text: P[1]?.name || '' }] : [],
+    extra: i => `<br>${n0(days[i][1])} requests · in ${tok(days[i][2])} · out ${tok(days[i][3])} · cache read ${tok(days[i][4])} · cache write ${tok(days[i][5])}` });
+  const months = new Map();
+  for (const d of days) { const k = d[0].slice(0, 7), a = months.get(k) || [k, 0, 0, 0, 0, 0, 0, 0]; a[1]++; for (let j = 1; j < 7; j++) a[j + 1] += d[j]; months.set(k, a); }
+  table($('#months'), [
+    { h: 'Month', l: 1 }, { h: 'Active days', f: n0 }, { h: 'Requests', f: n0 }, { h: 'Input', f: tok }, { h: 'Output', f: tok }, { h: 'Cache read', f: tok }, { h: 'Cache write', f: tok },
+    { h: 'API $', f: v => `${usd(v)} <span class="mute">(${loc(v * D.fx)})</span>` },
+  ], [...months.values()], { sort: 0 });
+}
+
+function drawKpis(ix) {
+  let u = 0, t = 0, out = 0, sub = 0, e7 = 0; const ss = new Set(), days = new Set();
+  for (const i of ix) { const r = R[i]; u += r[USD]; t += tokens(r); out += r[OUT]; e7 += est7[i]; if (r[AG] >= 0) sub += r[USD]; ss.add(r[SE]); days.add(dstr(r[TS])); }
+  let rise7 = 0, rise5 = 0;
+  for (const s of D.steps) if (!s[8] && s[4] > s[3] && s[1] >= F.from && s[1] < F.to && (F.plan < 0 || periodOf(s[1]) === F.plan)) { if (s[2]) rise7 += s[4] - s[3]; else rise5 += s[4] - s[3]; }
+  const k = [
+    [usd(u), 'API-equivalent (USD)'], [loc(u * D.fx), 'API-equivalent'], [tok(t), 'tokens, all kinds'], [tok(out), 'output tokens'], [n0(ix.length), 'requests'],
+    [n0(ss.size), 'sessions'], [n0(days.size), 'active days'], [usd(days.size ? u / days.size : 0), 'per active day'],
+    [n0(u ? sub / u * 100 : 0) + '%', 'of $ by subagents'], [n1(e7) + '%', '≈ 7-day limit used (from tokens)'], [rise7 + '%', 'measured 7-day rise'], [rise5 + '%', 'measured 5-hour rise'],
+  ];
+  $('#kpis').innerHTML = k.map(([v, l]) => `<div class="kpi"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
+}
+
+// ---------------------------------------------------------------- irregularities
+const I = D.irr || { chunks: [], fits: [], times: [], findings: [], flag: 0.3 };
+// chunk: t0, t1, kind, dpct, usd, tokens, out, period, baseline, dev, {model: usd}, subShare, i0, i1, why
+const mixOf = c => { const tot = c[4] || 1; return Object.entries(c[10]).sort((a, b) => b[1] - a[1]).filter(e => e[1] / tot >= 0.03).map(([m, v]) => `<span class="pill">${esc(D.models[m].replace('claude-', ''))} ${n0(v / tot * 100)}%</span>`).join(''); };
+['#irrKind', '#irrMetric'].forEach(s => $(s).onchange = drawIrr);
+let sevShow = 'all';
+const SEV = { high: 'big', med: 'moderate', info: 'pattern' };
+function drawIrr() {
+  const kind = +$('#irrKind').value, metric = $('#irrMetric').value;
+  const inR = c => c[1] >= F.from && c[1] < F.to && (F.plan < 0 || c[7] === F.plan);
+  const inF = f => f.ts >= F.from && f.ts < F.to;
+  const cnt = k => I.findings.filter(f => inF(f) && (k === 'all' || f.sev === k)).length;
+  const fs = I.findings.filter(f => inF(f) && (sevShow === 'all' || f.sev === sevShow));
+  let fh = '<div style="margin-bottom:6px">' + [['all', 'all'], ['high', 'big'], ['med', 'moderate'], ['info', 'patterns']].map(([k, l]) => `<button data-s="${k}" class="${sevShow === k ? 'on' : ''}">${l} (${cnt(k)})</button>`).join(' ') + '</div>';
+  if (fs.length) {
+    fh += '<ul class="verdict" style="font-size:14px">' + fs.slice(0, 60).map(f => `<li><span class="pill ${f.sev === 'high' ? 'bad' : f.sev === 'med' ? 'warn' : ''}">${SEV[f.sev]}</span> ${esc(f.text)}</li>`).join('') + '</ul>';
+    if (fs.length > 60) fh += `<div class="mute">and ${fs.length - 60} more in the table below</div>`;
+  } else fh += '<div class="good">Nothing irregular in this range: the same use moved the % by about the same amount throughout.</div>';
+  $('#findings').innerHTML = fh;
+  $('#findings').querySelectorAll('button').forEach(b => b.onclick = () => { sevShow = b.dataset.s; drawIrr(); });
+
+  // the rate over time, with the baseline
+  const cs = I.chunks.filter(c => c[2] === kind && inR(c) && c[3] > 0);
+  const val = c => metric === 'usd' ? c[4] / c[3] : metric === 'tok' ? c[5] / c[3] / 1e6 : c[6] / c[3] / 1e3;
+  const baseVal = c => c[8] == null ? null : val(c) / (1 + c[9]);
+  const el = $('#irrChart');
+  if (!cs.length) el.innerHTML = '<div class="mute">No measurements for this limit in the range.</div>';
+  else {
+    const W = Math.max(el.clientWidth || 900, 300), H = 260, L = 56, B = 34, T = 12, Rr = 10;
+    const x0 = cs[0][1], x1 = Math.max(cs[cs.length - 1][1], x0 + HOURMS), vs = cs.map(val);
+    const ymax = Math.max(...vs, ...cs.map(c => baseVal(c) || 0)) * 1.08 || 1;
+    const x = v => L + (W - L - Rr) * (v - x0) / (x1 - x0), y = v => T + (H - T - B) * (1 - v / ymax);
+    const f = metric === 'usd' ? usd : n1;
+    let sv = `<svg viewBox="0 0 ${W} ${H}" height="${H}">`;
+    for (let k = 0; k <= 4; k++) { const v = ymax * k / 4; sv += `<line x1="${L}" x2="${W - Rr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--mute)">${esc(f(v))}</text>`; }
+    for (let k = 0; k <= 6; k++) { const t = x0 + (x1 - x0) * k / 6; sv += `<text x="${x(t)}" y="${H - B + 16}" text-anchor="middle" font-size="11" fill="var(--mute)">${esc((x1 - x0) > 3 * DAYMS ? dstr(t).slice(5) : tstr(t).slice(5))}</text>`; }
+    P.forEach((p, i) => { if (i && p.from >= x0 && p.from <= x1) sv += `<line x1="${x(p.from)}" x2="${x(p.from)}" y1="${T}" y2="${H - B}" stroke="var(--accent)" stroke-dasharray="4 3"/><text x="${x(p.from) + 4}" y="${T + 10}" font-size="11" fill="var(--accent)">${esc(p.name)}</text>`; });
+    let d = '', open = false;
+    cs.forEach(c => { const b = baseVal(c); if (b == null) { open = false; return; } d += `${open ? 'L' : 'M'}${x(c[1])},${y(b)}`; open = true; });
+    sv += `<path d="${d}" fill="none" stroke="var(--mute)" stroke-dasharray="3 3"/>`;
+    cs.forEach((c, i) => {
+      const dev = c[9], off = Math.abs(dev || 0);
+      const col = dev == null ? 'var(--mute)' : off >= 2 * I.flag ? 'var(--bad)' : off >= I.flag ? 'var(--warn)' : '#3d7ab8';
+      sv += `<circle cx="${x(c[1])}" cy="${y(vs[i])}" r="${off >= I.flag ? 4.5 : 3}" fill="${col}" data-i="${i}"/>`;
+    });
+    sv += '</svg>';
+    el.innerHTML = sv + `<div class="legend"><span><i style="background:#3d7ab8"></i>normal</span><span><i style="background:var(--warn)"></i>${n0(I.flag * 100)}%+ off usual</span><span><i style="background:var(--bad)"></i>${n0(I.flag * 200)}%+ off</span><span>- - - usual (median of the measurements before)</span><span class="mute">higher = more use per 1%, i.e. the limit going further</span></div>`;
+    el.querySelectorAll('circle').forEach(ci => {
+      ci.onmousemove = e => {
+        const c = cs[+ci.dataset.i], sm = summarize(c[12], c[13]);
+        showTip(e, `<b>${esc(tstr(c[0]))} – ${esc(tstr(c[1]).slice(11))}</b><br>+${c[3]}% for ${usd(c[4])} · ${tok(c[5])} tokens<br>${usd(c[4] / c[3])} per 1%` + (c[8] ? ` (usual ${usd(c[8])}, ${c[9] > 0 ? '+' : ''}${n0(c[9] * 100)}%)` : '') + `<br>${mixOf(c)}<br>${sm.topS}`);
+      };
+      ci.onmouseleave = hideTip;
+    });
+  }
+
+  // per-model rates, per plan and per week
+  const frows = [];
+  I.fits.filter(f => f.kind === kind && (F.plan < 0 || f.period === F.plan)).forEach(f => f.models.filter(m => m.solid || m.share >= 0.02).forEach(m =>
+    frows.push([f.label, f.chunks, m.name, m.share * 100, m.usd, m.per1, m.tokPer1, m.per1 ? m.per1 / f.overall - 1 : null, m.solid, f.label.startsWith('week') ? 1 : 0])));
+  table($('#fits'), [
+    { h: 'Plan / week', l: 1, f: (v, r) => r[9] ? esc(v) : `<b>${esc(v)}</b> <span class="mute">(whole plan)</span>` }, { h: 'Measurements', f: n0 }, { h: 'Model', l: 1 },
+    { h: 'Share of $', f: v => n0(v) + '%' }, { h: 'API $', f: usd },
+    { h: '$ per 1%', f: (v, r) => v == null ? '–' : usd(v) + (r[8] ? '' : ' <span class="mute" title="this model rarely ran on its own, so its rate is a rough split">~</span>') },
+    { h: 'Tokens per 1%', f: v => v == null ? '–' : tok(v) },
+    { h: 'vs your mix', f: v => v == null ? '' : `<span class="${Math.abs(v) >= 0.35 ? (v < 0 ? 'bad' : 'good') : ''}">${v > 0 ? '+' : ''}${n0(v * 100)}%</span>` },
+  ], frows, { limit: 200 });
+  table($('#times'), [
+    { h: 'Plan', l: 1 }, { h: 'When', l: 1 }, { h: 'Measurements', f: n0 }, { h: '$ per 1%', f: usd },
+    { h: 'vs overall', f: v => `<span class="${Math.abs(v) >= I.flag ? (v < 0 ? 'bad' : 'good') : ''}">${v > 0 ? '+' : ''}${n0(v * 100)}%</span>` },
+  ], I.times.filter(t => t.kind === kind && (F.plan < 0 || t.period === P[F.plan].name)).map(t => [t.period, t.band, t.chunks, t.per1, t.vs]), { limit: 50 });
+
+  // every measurement
+  const rows = I.chunks.filter(c => inR(c) && c[2] === kind).map(c => {
+    const sm = summarize(c[12], c[13]);
+    return [c[1], P[c[7]].name, c[3], c[4], c[5], c[3] ? c[4] / c[3] : null, c[8], c[9], c[11] * 100, mixOf(c), sm.topS, c[14], (c[1] - c[0]) / 60000];
+  });
+  table($('#chunks'), [
+    { h: 'Ended', l: 1, f: v => esc(tstr(v)) }, { h: 'Plan', l: 1 }, { h: '% moved', f: v => '+' + v }, { h: 'API $', f: usd }, { h: 'Tokens', f: tok },
+    { h: '$ per 1%', f: v => v == null ? '–' : usd(v) }, { h: 'Usual', f: v => v == null ? '<span class="mute">learning</span>' : usd(v) },
+    { h: 'Off by', f: v => v == null ? '' : `<b class="${Math.abs(v) >= 2 * I.flag ? 'bad' : Math.abs(v) >= I.flag ? 'warn' : 'mute'}">${v > 0 ? '+' : ''}${n0(v * 100)}%</b>` },
+    { h: 'Subagent $', f: v => n0(v) + '%' }, { h: 'Models', l: 1, f: v => v }, { h: 'What was running', wrap: 1, f: v => v || '<span class="mute">nothing logged</span>' },
+    { h: 'Likely why', wrap: 1, f: v => esc(v) }, { h: 'Took', f: v => v < 90 ? n0(v) + ' min' : hrs(v / 60) },
+  ], rows, { sort: 0, limit: 150 });
+}
+
+function render() {
+  const ix = rowsInRange();
+  drawIrr(); drawKpis(ix); drawLimits(); drawTime(ix); drawHeat(ix); drawBreakdowns(ix); drawSteps(); drawSessions(ix); drawPrompts(ix); drawWindows(); drawDaily();
+}
+
+$('#sub').textContent = `Built ${tstr(D.built)} from ${R.length.toLocaleString()} requests on ${D.hosts.length} machine${D.hosts.length > 1 ? 's' : ''} (${R.length ? dstr(R[0][TS]) + ' to ' + dstr(R[R.length - 1][TS]) : 'none'}), ${D.limits.length.toLocaleString()} limit readings. Run tools/usage-report.py again to refresh.`;
+initFilters(); verdict(); readFilters();
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 200); });
+</script>
+</body>
+</html>

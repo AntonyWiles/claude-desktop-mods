@@ -51,8 +51,9 @@ ROOT = os.path.join(HOME, ".claude", "usage-meter")
 PROJECTS = os.path.join(HOME, ".claude", "projects")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRICES_PATH = os.path.join(HERE, "..", "prices.json")
-KEEP_DAYS = 35
-LIMIT_DAYS = 9
+KEEP_DAYS = 35  # transcripts scanned
+LEDGER_DAYS = 400  # day files kept, for the usage report's history
+LIMIT_DAYS = 400  # plan-limit readings kept (the band only looks at the last few days)
 SCAN_SECONDS = 3
 SEEN_PER_FILE = 400
 
@@ -270,7 +271,7 @@ class Ledger:
         return n
 
     def prune(self) -> None:
-        cutoff = day_of(now_ms() - KEEP_DAYS * 86_400_000)
+        cutoff = day_of(now_ms() - LEDGER_DAYS * 86_400_000)
         try:
             for name in os.listdir(self.dir):
                 if name.endswith(".json") and name[:-5] < cutoff:
@@ -635,6 +636,32 @@ def subscription() -> str:
     return ""
 
 
+def plan_info(sub: str) -> dict:
+    """The account's plan as Claude Code last saw it: display name (Max, Ultra...) and rate-limit tier.
+    subscriptionType alone does not tell Max from Ultra."""
+    acct = load_json(os.path.join(HOME, ".claude.json"), {}).get("oauthAccount") or {}
+    return {
+        "plan": str(acct.get("planDisplayName") or ""),
+        "tier": str(acct.get("organizationRateLimitTier") or acct.get("userRateLimitTier") or ""),
+        "sub": sub,
+    }
+
+
+def record_plan(host: str, info: dict) -> None:
+    """Append to hosts/<host>/plan.json when the plan changes: {"changes": [[ms, plan, tier, sub], ...]}."""
+    if not info.get("plan") and not info.get("sub"):
+        return
+    path = os.path.join(ROOT, "hosts", host, "plan.json")
+    doc = load_json(path, {"changes": []})
+    row = [now_ms(), info["plan"], info["tier"], info["sub"]]
+    last = doc["changes"][-1] if doc.get("changes") else None
+    if last and last[1:] == row[1:]:
+        return
+    doc.setdefault("changes", []).append(row)
+    write_json(path, doc)
+    log(f"plan: {info['plan'] or info['sub']} ({info['tier']})")
+
+
 # ------------------------------------------------------------------ main loop
 
 
@@ -647,6 +674,7 @@ def write_status(c: Collector, s: Syncer | None, sub: str, started: int) -> None
         "lastIngestAt": c.last_ingest,
         "files": len(c.state["files"]),
         "subscription": sub,
+        "plan": plan_info(sub),
         "sync": s.results if s else {},
     })
 
@@ -693,6 +721,7 @@ def run(once: bool = False) -> None:
     last_codex_save = 0.0
     started = now_ms()
     sub = subscription()
+    record_plan(c.host, plan_info(sub))
     last_sub = time.time()
     last_sync = 0.0
     sync_thread: threading.Thread | None = None
@@ -720,6 +749,7 @@ def run(once: bool = False) -> None:
                 last_prune = time.time()
             if time.time() - last_sub > 3600:
                 sub = subscription() or sub
+                record_plan(c.host, plan_info(sub))
                 last_sub = time.time()
             if s and (once or time.time() - last_sync >= cfg.get("syncSeconds", 20)):
                 if sync_thread is None or not sync_thread.is_alive():
