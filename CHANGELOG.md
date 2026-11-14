@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.0 - 2026-11-15
+
 - The collector keeps plan-limit readings and per-request day files for 400 days (were 9 and 35),
   for long-term comparisons; the band still reads only recent readings. It also records the plan
   (Max, Ultra...) and its rate-limit tier to `hosts/<host>/plan.json` whenever it changes.
@@ -14,7 +16,7 @@
 ## 1.1.1 - 2026-11-14
 
 - Fix: the limit % and its "$ to go" jumped around. A slower session saving a stale, lower %
-  pulled the band back (43% â†’ 40% â†’ 43%); the band now shows the highest reading since the
+  pulled the band back (43% Ã¢â€ â€™ 40% Ã¢â€ â€™ 43%); the band now shows the highest reading since the
   window's last early reset. And after an early reset with the same reset time (a plan upgrade
   does this), points crossed were never learned from and "$ to go" counted spending from before
   the reset, overstating it about 2x; both now start from the reset.
@@ -56,8 +58,8 @@
   by model and effort, and every call's usage is kept in the cleaned archive so it outlives the
   transcripts Claude Code deletes. Empty bookkeeping rows
   are no longer archived.
-- New band layout: the full-width `Ã¢â€â‚¬Ã¢â€â‚¬ usage` / `Ã¢â€â‚¬Ã¢â€â‚¬ git` rules are gone. Each feature's rows sit
-  beside a short dim label in a gutter (`usage Ã¢â€â€š`, `git Ã¢â€â€š`, `next Ã¢â€â€š`), and the context ring closes
+- New band layout: the full-width `ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ usage` / `ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ git` rules are gone. Each feature's rows sit
+  beside a short dim label in a gutter (`usage ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡`, `git ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡`, `next ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡`), and the context ring closes
   the first row instead of taking one of its own.
 - Next steps: hover a suggestion on desktop or VS Code to read its full prompt in a preview area
   under the list, which keeps its height so nothing moves. On the desktop the preview waits until
