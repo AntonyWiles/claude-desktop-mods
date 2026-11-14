@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The collector keeps plan-limit readings and per-request day files for 400 days (were 9 and 35),
+  for long-term comparisons; the band still reads only recent readings. It also records the plan
+  (Max, Ultra...) and its rate-limit tier to `hosts/<host>/plan.json` whenever it changes.
+- New: `tools\usage-report.py` builds an HTML report (`reports\usage-report.html`): limit % over
+  time, usage by month to minute, breakdowns by model, effort, subagents, project, skill and MCP
+  server, every limit step with what was running, what 1% of the limit buys on each plan, and
+  irregularities (stretches where the same use moved the % more or less than usual, per-model
+  rates by week, time of day). Plan prices and the exchange rate are set at the top of the script.
+
 ## 1.1.1 - 2026-11-14
 
 - Fix: the limit % and its "$ to go" jumped around. A slower session saving a stale, lower %
