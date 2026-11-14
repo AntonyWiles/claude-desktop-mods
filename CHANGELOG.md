@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 - 2026-11-14
+
 - New: a token ledger. The usage collector keeps every day's tokens per model (calls, input,
   output, cache reads, 5-minute and 1-hour cache writes, web searches) in
   `~/.claude/usage-meter/local/tokens.json` for 400 days, long after Claude Code deletes the
@@ -36,8 +38,8 @@
   by model and effort, and every call's usage is kept in the cleaned archive so it outlives the
   transcripts Claude Code deletes. Empty bookkeeping rows
   are no longer archived.
-- New band layout: the full-width `── usage` / `── git` rules are gone. Each feature's rows sit
-  beside a short dim label in a gutter (`usage │`, `git │`, `next │`), and the context ring closes
+- New band layout: the full-width `â”€â”€ usage` / `â”€â”€ git` rules are gone. Each feature's rows sit
+  beside a short dim label in a gutter (`usage â”‚`, `git â”‚`, `next â”‚`), and the context ring closes
   the first row instead of taking one of its own.
 - Next steps: hover a suggestion on desktop or VS Code to read its full prompt in a preview area
   under the list, which keeps its height so nothing moves. On the desktop the preview waits until
