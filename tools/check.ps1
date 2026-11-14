@@ -8,4 +8,6 @@ if ($LASTEXITCODE -ne 0) { throw "claude plugin validate failed" }
 if ($LASTEXITCODE -ne 0) { throw "claude plugin test failed" }
 & python -m py_compile (Get-ChildItem (Join-Path $Root "collector\*.py")).FullName (Join-Path $Root "tools\clean-archive.py") (Get-ChildItem (Join-Path $Root "skills\*\*.py")).FullName
 if ($LASTEXITCODE -ne 0) { throw "Python scripts do not compile" }
+& python -m unittest discover -q -s (Join-Path $Root "tests") -p "test_*.py"
+if ($LASTEXITCODE -ne 0) { throw "collector tests failed" }
 Write-Host "All checks passed." -ForegroundColor Green

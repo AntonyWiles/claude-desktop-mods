@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix: the limit % and its "$ to go" jumped around. A slower session saving a stale, lower %
+  pulled the band back (43% → 40% → 43%); the band now shows the highest reading since the
+  window's last early reset. And after an early reset with the same reset time (a plan upgrade
+  does this), points crossed were never learned from and "$ to go" counted spending from before
+  the reset, overstating it about 2x; both now start from the reset.
+- Collector tests (`tests/test_collector_limits.py`), run by `tools\check.ps1`.
+
 ## 1.1.0 - 2026-11-14
 
 - New: a token ledger. The usage collector keeps every day's tokens per model (calls, input,

@@ -792,26 +792,37 @@ class ViewBuilder:
         dur = WINDOW_MS.get(kind)
         resets = last[3] or None
         is_reset = resets is not None and resets <= now
-        pct = 0 if is_reset else last[2]
         start = resets - dur if (resets and dur) else None
 
         def win(s):
             return round((s[3] or 0) / 600_000)
 
+        # This window since its last early reset (a plan upgrade resets the % but not
+        # the reset time). The % is the highest reading there: within one stretch it
+        # never goes down, and slower sessions report a stale, lower % for a while.
+        here = [s for s in ks if win(s) == win(last)]
+        seg_start, seg = segments(here, start)[-1] if start is not None else (None, here)
+        pct = 0 if is_reset else max(s[2] for s in seg)
+        if seg_start is not None:
+            start = seg_start
+
         # Each whole point is timed by the first reading that showed it, and only
         # counts when some session had read the limit shortly before (it was
         # watching). Lagging readings from slower sessions just prove watching.
+        # Each window is split at its early resets, so points after one count from its new level.
         crossings = []
-        top = last_seen = cur = None
+        by_window: dict = {}
         for s in ks:
-            if win(s) != cur:
-                cur, top, last_seen = win(s), s[2], s[0]
+            by_window.setdefault(win(s), []).append(s)
+        for rs in by_window.values():
+            for _, piece in segments(rs, (rs[-1][3] or rs[0][0]) - (dur or 0)):
+                top, last_seen = piece[0][2], piece[0][0]
                 crossings.append(None)
-                continue
-            if s[2] > top:
-                crossings.append((s[0], s[2]) if s[0] - last_seen <= WATCH_GAP else None)
-                top = s[2]
-            last_seen = s[0]
+                for s in piece[1:]:
+                    if s[2] > top:
+                        crossings.append((s[0], s[2]) if s[0] - last_seen <= WATCH_GAP else None)
+                        top = s[2]
+                    last_seen = s[0]
         stretches = []
         for a, b in zip(crossings, crossings[1:]):
             if a is None or b is None:
