@@ -37,6 +37,10 @@ td.l, th.l { text-align:left; } td.wrap { white-space:normal; min-width:260px; m
 .heat td { padding:0; width:28px; height:20px; text-align:center; font-size:10px; border:1px solid var(--card); }
 .pill { display:inline-block; padding:0 6px; border-radius:9px; background:var(--line); font-size:11px; margin-right:3px; }
 .more { margin-top:8px; }
+table.win th { font-size:13px; color:var(--fg); cursor:default; position:static; width:60px; }
+table.win td { border:0; padding:5px 8px; } table.win tr { border-bottom:1px solid var(--line); }
+td.wbar { width:70%; } td.wbar i { display:inline-block; height:22px; line-height:22px; font-size:11px; font-style:normal; color:#fff; overflow:hidden; white-space:nowrap; text-align:center; vertical-align:middle; }
+details summary { cursor:pointer; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -53,10 +57,19 @@ td.l, th.l { text-align:left; } td.wrap { white-space:normal; min-width:260px; m
   <label>Project <select id="proj"></select></label>
 </div>
 <main>
+  <section class="card" id="now">
+    <h2 id="nowTitle">Now</h2>
+    <div class="kpis" id="nowKpis"></div>
+    <h2 style="margin-top:16px">Where the 7-day limit went <span class="mute" style="font-weight:400" id="nowUnit"></span></h2>
+    <div id="nowWin"></div>
+    <div class="grid2" style="margin-top:14px">
+      <div><h2>Last 24 hours, by hour</h2><div class="chart" id="now24"></div></div>
+      <div><h2>Last 7 days, by day</h2><div class="chart" id="now7"></div></div>
+    </div>
+  </section>
   <section class="card" id="verdict"></section>
   <section class="card" id="irrCard">
-    <h2>Irregularities <span class="mute" style="font-weight:400">— is the same use moving the % by the same amount?</span></h2>
-    <div class="mute" style="margin-bottom:8px">Limit steps are grouped into measurements of about 5% (7-day) or 10% (5-hour). Each gives the API-equivalent $ and tokens it took to move the limit 1%, compared with the median of the measurements before it on the same plan. Per-model rates come from fitting every measurement's model mix against the % it moved.</div>
+    <h2>Irregularities <span class="mute" style="font-weight:400" title="Limit steps are grouped into measurements of about 5% (7-day) or 10% (5-hour). Each is compared with the median $ per 1% of the measurements before it on the same plan; per-model rates come from fitting each measurement's model mix against the % it moved.">— does the same use move the % the same? ⓘ</span></h2>
     <div id="findings"></div>
     <div class="bar" style="position:static;padding:10px 0 6px;border:0">
       <label>Limit <select id="irrKind"><option value="1">7-day</option><option value="0">5-hour</option></select></label>
@@ -233,60 +246,122 @@ function table(el, cols, rows, o = {}) {
   draw();
 }
 
-// ---------------------------------------------------------------- the plan check (all data, not the filters)
+// ---------------------------------------------------------------- the top: now, and where the limit went (all data, not the filters)
 function latest(kind) { let s = null; for (const x of D.limits) if (x[1] === kind) s = x; return s; }
+const CUR = (() => { for (let i = P.length - 1; i >= 0; i--) if (per1(i, 'seven_day')) return i; return P.length - 1; })();
+// how much each model counts against the limit per API $, relative to your mix (from the fits; 1 when unknown)
+const MW = (() => {
+  const w = {}, fits = ((D.irr || {}).fits || []).filter(f => f.kind === 1 && !f.label.startsWith('week')).sort((a, b) => a.period - b.period);
+  for (const f of fits) for (const m of f.models) if (m.model >= 0 && m.solid && m.per1) w[m.model] = f.overall / m.per1;
+  return w;
+})();
+const ptsOf = i => { const c = per1(CUR, 'seven_day'); return c ? R[i][PUSD] * (MW[R[i][MO]] || 1) / c : 0; };
+const mShort = m => (D.models[m] || '?').replace('claude-', '');
+const MCOL = (() => {
+  const tot = new Map(), now = Date.now();
+  for (let i = lowerBound(now - 30 * DAYMS); i < R.length; i++) tot.set(R[i][MO], (tot.get(R[i][MO]) || 0) + R[i][PUSD]);
+  const col = {}; [...tot.entries()].sort((a, b) => b[1] - a[1]).forEach(([m], j) => col[m] = j < 8 ? COLORS[j] : '#999');
+  return col;
+})();
+const mCol = m => MCOL[m] || '#999';
+const ago = ms => { const h = ms / HOURMS; return h < 1 ? n0(h * 60) + ' min' : h < 48 ? n1(h) + ' h' : n1(h / 24) + ' days'; };
+function measured7(a, b) { // 7-day % points the readings rose in [a, b), in points of the current plan
+  let v = 0; const c = per1(CUR, 'seven_day');
+  for (const s of D.steps) if (s[2] === 1 && !s[8] && s[4] > s[3] && s[1] >= a && s[1] < b) { const q = per1(periodOf(s[1]), 'seven_day'); v += (s[4] - s[3]) * (q && c ? q / c : 1); }
+  return v;
+}
+function drawNow() {
+  const now = Date.now(), l7 = latest(1), l5 = latest(0), cur = P[CUR];
+  $('#nowTitle').innerHTML = `Now <span class="mute" style="font-weight:400">— ${esc(cur.name)}${cur.tier ? ' · ' + esc(cur.tier) : ''}</span>`;
+  const k = [];
+  if (l7) {
+    const left = Math.max(l7[3] - now, 0), start = Math.max(l7[3] - 7 * DAYMS, cur.from || 0);
+    const r0 = D.limits.find(s => s[1] === 1 && s[0] >= start && Math.abs(s[3] - l7[3]) < HOURMS);
+    const el = r0 ? now - r0[0] : 0, pace = r0 && el > HOURMS ? l7[2] + (l7[2] - r0[2]) / el * left : null;
+    k.push([`${l7[2]}%`, `7-day used · ${100 - l7[2]}% left`, l7[2] >= 85 ? 'bad' : l7[2] >= 60 ? 'warn' : '']);
+    k.push([ago(left), `to reset (${tstr(l7[3]).slice(5)})`, '']);
+    if (pace != null) k.push([`${n0(pace)}%`, 'on pace for at reset', pace > 100 ? 'bad' : pace > 85 ? 'warn' : 'good']);
+    k.push([n1((100 - l7[2]) / Math.max(left / DAYMS, 0.05)), 'pts a day you can still use', '']);
+  }
+  if (l5 && l5[3] > now) k.push([`${l5[2]}%`, `5-hour used · resets ${tstr(l5[3]).slice(11)}`, l5[2] >= 85 ? 'bad' : '']);
+  else k.push(['–', '5-hour: none reported' + (l5 ? ' since ' + tstr(l5[0]).slice(5) : ''), 'mute']);
+  let d24 = 0; for (let i = lowerBound(now - DAYMS); i < R.length; i++) d24 += R[i][USD];
+  k.push([usd(d24), 'API-equivalent, last 24 h', '']);
+  if (l7) k.push([ago(now - l7[0]), 'since the last reading', now - l7[0] > 6 * HOURMS ? 'warn' : 'mute']);
+  $('#nowKpis').innerHTML = k.map(([v, l, c]) => `<div class="kpi"><b class="${c}">${esc(v)}</b><span>${esc(l)}</span></div>`).join('');
+  const avg = per1(CUR, 'seven_day');
+  $('#nowUnit').textContent = `— % points the 7-day readings rose (in ${cur.name} points), split by each model's share of the tokens`;
+
+  // a span's model split: measured points shared out by token weight; points with no logged use = "unlogged"
+  const split = (a, b) => {
+    const m = new Map(); let est = 0, u = 0;
+    for (let i = lowerBound(a); i < R.length && R[i][TS] < b; i++) { const p = ptsOf(i); est += p; u += R[i][USD]; m.set(R[i][MO], (m.get(R[i][MO]) || 0) + p); }
+    const rd = measured7(a, b), out = new Map();
+    if (est) m.forEach((v, mo) => out.set(mo, rd * v / est)); else if (rd) out.set(-1, rd);
+    return { out, rd, est, u };
+  };
+  const nameOf = mo => mo < 0 ? 'unlogged' : mShort(mo), colOf = mo => mo < 0 ? '#777' : mCol(mo);
+
+  // windows: 100%-stacked bar of the model mix, with the totals
+  const wins = [['3 h', 3], ['6 h', 6], ['12 h', 12], ['24 h', 24], ['7 days', 168]];
+  let h = `<table class="win"><thead><tr><th></th><th class="l mute">model split</th><th>points</th><th class="mute">from tokens</th><th class="mute">API $</th><th class="mute">$ per point</th></tr></thead><tbody>`;
+  for (const [name, hh] of wins) {
+    const { out, rd, est, u } = split(now - hh * HOURMS, now);
+    const parts = [...out.entries()].filter(e => e[1] > 0).sort((x, y) => y[1] - x[1]);
+    const bar = rd ? parts.map(([mo, v]) => { const pc = v / rd * 100; return `<i style="width:${pc}%;background:${colOf(mo)}" title="${esc(nameOf(mo))}: ${n1(v)} pts (${n0(pc)}%)">${pc >= 9 ? esc(nameOf(mo)) + ' ' + n1(v) : ''}</i>`; }).join('') : `<span class="mute">${u ? 'no change in the readings yet' : 'nothing ran'}</span>`;
+    const pp = rd ? u / rd : null, off = pp && avg ? pp / avg : 1;
+    h += `<tr><th class="l">${name}</th><td class="wbar">${bar}</td><td><b>${n0(rd)}</b></td><td class="mute">≈${n1(est)}</td><td class="mute">${usd(u)}</td>` +
+      `<td class="${off < 0.6 ? 'bad' : off > 1.6 ? 'good' : 'mute'}">${pp ? usd(pp) : '–'}</td></tr>`;
+  }
+  $('#nowWin').innerHTML = h + `</tbody></table><div class="mute" style="margin-top:4px">${cur.name} average: ${avg ? usd(avg) : '–'} per point. Red = the limit is burning much faster per $ than that (untracked use, or the limit counting these tokens dearer).</div>`;
+
+  // hourly and daily stacked bars, by model
+  const stack = (el, a, step, n, lab) => {
+    const labels = [], cells = [], ms = new Map(), info = [];
+    for (let j = 0; j < n; j++) {
+      labels.push(lab(a + j * step));
+      const s = split(a + j * step, a + (j + 1) * step); cells.push(s.out); info.push(s);
+      s.out.forEach((v, mo) => ms.set(mo, (ms.get(mo) || 0) + v));
+    }
+    const series = [...ms.entries()].sort((x, y) => y[1] - x[1]).map(([mo]) => ({ name: nameOf(mo), color: colOf(mo), values: cells.map(c => c.get(mo) || 0) }));
+    barChart(el, labels, series, { fmt: v => n1(v) + ' pts', h: 210, extra: j => `<br><span class="mute">${usd(info[j].u)} API · ≈${n1(info[j].est)} pts from tokens</span>` });
+  };
+  const hr = new Date(now); hr.setMinutes(0, 0, 0);
+  stack($('#now24'), hr.getTime() - 23 * HOURMS, HOURMS, 24, t => pad(new Date(t).getHours()) + ':00');
+  const dy = new Date(now); dy.setHours(0, 0, 0, 0);
+  stack($('#now7'), dy.getTime() - 6 * DAYMS, DAYMS, 7, t => new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }));
+}
+
+// ---------------------------------------------------------------- the plan check (all data, not the filters)
 function verdict() {
   const el = $('#verdict'), now = Date.now(), fx = D.fx;
-  const before = P[0], after = P[P.length - 1];
+  const before = P[0], after = P[CUR];
   const c7 = P.map((_, i) => per1(i, 'seven_day')), c5 = P.map((_, i) => per1(i, 'five_hour'));
-  const l5 = latest(0), l7 = latest(1);
-  // pace: the last 7 days of requests
   let week = 0; for (let i = lowerBound(now - 7 * DAYMS); i < R.length; i++) week += R[i][PUSD];
   let month = 0, mFrom = Math.max(firstTs, now - 30 * DAYMS); for (let i = lowerBound(mFrom); i < R.length; i++) month += R[i][USD];
-  const mDays = Math.max(1, (now - mFrom) / DAYMS), monthly = month / mDays * 30.4;
-  let h = `<h2>Is ${esc(after.name)} worth it?</h2><table style="width:auto;margin-bottom:12px"><thead><tr><th class="l">Plan</th><th class="l">From</th><th>Price / month</th><th>1% of 7-day limit</th><th>Full 7-day limit</th><th>1% of 5-hour</th><th>Full 5-hour</th><th>Readings used</th></tr></thead><tbody>`;
+  const monthly = month / Math.max(1, (now - mFrom) / DAYMS) * 30.4;
+  let h = `<h2>Plans compared</h2><table style="width:auto;margin-bottom:10px"><thead><tr><th class="l">Plan</th><th class="l">From</th><th>Price / month</th><th>$ per 1% of 7-day</th><th>Full 7-day</th><th>Full 5-hour</th><th>Points measured</th></tr></thead><tbody>`;
   P.forEach((p, i) => {
-    h += `<tr><td class="l"><b>${esc(p.name)}</b> ${p.tier ? `<span class="pill">${esc(p.tier)}</span>` : ''}</td><td class="l">${p.from ? esc(tstr(p.from)) : 'start of data'}${p.from && !D.upgradeGiven && i === 1 ? ' <span class="mute">(found in readings)</span>' : ''}</td>` +
+    h += `<tr><td class="l"><b>${esc(p.name)}</b></td><td class="l">${p.from ? esc(tstr(p.from)) : 'start'}</td>` +
       `<td>${p.price != null ? loc(p.price) : '<span class="warn">not set</span>'}</td>` +
-      `<td>${c7[i] ? usd(c7[i]) : '–'}</td><td>${c7[i] ? usd(c7[i] * 100) + ' <span class="mute">(' + loc(c7[i] * 100 * fx) + ')</span>' : '–'}</td>` +
-      `<td>${c5[i] ? usd(c5[i]) : '–'}</td><td>${c5[i] ? usd(c5[i] * 100) : '–'}</td><td>${p.cap?.seven_day?.points || 0} pts of 7d, ${p.cap?.five_hour?.points || 0} of 5h</td></tr>`;
+      `<td>${c7[i] ? usd(c7[i]) : '–'}</td><td>${c7[i] ? usd(c7[i] * 100) : '–'}</td><td>${c5[i] ? usd(c5[i] * 100) : '–'}</td>` +
+      `<td class="mute">${p.cap?.seven_day?.points || 0} · ${p.cap?.five_hour?.points || 0}</td></tr>`;
   });
   h += `</tbody></table><ul class="verdict">`;
-  if (P.length > 1 && c7[0] && c7[P.length - 1]) {
-    const ratio = c7[P.length - 1] / c7[0];
-    h += `<li>${esc(after.name)}'s 7-day limit holds about <b>${n1(ratio)}×</b> the usage of ${esc(before.name)}'s` + (c5[0] && c5[P.length - 1] ? `; its 5-hour limit about <b>${n1(c5[P.length - 1] / c5[0])}×</b>.` : '.') + `</li>`;
-    if (before.price && after.price) h += `<li>It costs <b>${n1(after.price / before.price)}×</b> as much (${loc(after.price)} vs ${loc(before.price)}), so each % of headroom costs ${ratio >= after.price / before.price ? '<span class="good">less</span>' : '<span class="bad">more</span>'} than on ${esc(before.name)}.</li>`;
+  if (P.length > 1 && c7[0] && c7[CUR] && CUR > 0) {
+    const ratio = c7[CUR] / c7[0], pr = before.price && after.price ? after.price / before.price : null;
+    h += `<li>${esc(after.name)} holds <b>${n1(ratio)}×</b> ${esc(before.name)}'s 7-day limit` + (pr ? ` for <b>${n1(pr)}×</b> the price — <span class="${ratio >= pr ? 'good' : 'bad'}">${ratio >= pr ? 'better' : 'worse'} value per %</span>` : '') + `.</li>`;
   }
-  if (l7 && c7[P.length - 1]) {
-    // the current 7-day window (from the plan change if that came later): how far in, and the pace
-    const start = Math.max(l7[3] - 7 * DAYMS, after.from || 0), el = Math.max(now - start, HOURMS), left = Math.max(l7[3] - now, 0);
-    let cur = 0; for (let i = lowerBound(start); i < R.length; i++) cur += R[i][PUSD];
-    const pace = l7[2] * (el + left) / el;
-    h += `<li>This ${esc(after.name)} week (since ${esc(tstr(start))}): <b>${l7[2]}%</b> used after ${hrs(el / HOURMS)}, on pace for <b class="${pace > 100 ? 'bad' : pace > 85 ? 'warn' : 'good'}">${n0(pace)}%</b> by the reset on ${esc(tstr(l7[3]))}.` +
-      (P.length > 1 && c7[0] ? ` The same use (${usd(cur)} API-equivalent) would already be <b class="${cur / c7[0] > 100 ? 'bad' : ''}">${n0(cur / c7[0])}%</b> of a ${esc(before.name)} week, on pace for ${n0(cur / c7[0] * (el + left) / el)}%.` : '') + `</li>`;
-  }
-  if (c7[0] && week) {
-    h += `<li>Your last 7 days of Claude Code use (any plan) came to <b>${usd(week)}</b> API-equivalent: ${n0(week / c7[0])}% of a ${esc(before.name)} week` + (P.length > 1 && c7[P.length - 1] ? `, ${n0(week / c7[P.length - 1])}% of an ${esc(after.name)} week.` : '.') + `</li>`;
-  }
-  if (l7 && l5 && l7[0] - l5[0] > 12 * HOURMS) h += `<li class="warn">No 5-hour reading since ${esc(tstr(l5[0]))}, while 7-day readings carry on: Claude Code stopped reporting a 5-hour window` + (after.from && l5[0] > after.from ? ` on ${esc(after.name)} — it looks like ${esc(after.name)} has no separate 5-hour limit.` : '.') + `</li>`;
-  // windows: how often would the cheaper plan have run out, and for how long
+  if (c7[0] && week) h += `<li>Last 7 days: <b>${usd(week)}</b> = <b>${n0(week / c7[0])}%</b> of a ${esc(before.name)} week` + (CUR > 0 && c7[CUR] ? `, <b>${n0(week / c7[CUR])}%</b> of an ${esc(after.name)} week` : '') + `.</li>`;
   const ws = D.windows.filter(w => w.covered && w.est[before.name] != null);
-  ['seven_day', 'five_hour'].forEach(kind => {
-    const k = ws.filter(w => w.kind === kind);
-    if (!k.length) return;
+  const fit = ['seven_day', 'five_hour'].map(kind => {
+    const k = ws.filter(w => w.kind === kind); if (!k.length) return '';
     const over = k.filter(w => w.est[before.name] >= 100), lock = over.reduce((s, w) => s + (w.lockHours[before.name] || 0), 0);
-    const name = kind === 'seven_day' ? '7-day' : '5-hour';
-    h += `<li>Of ${k.length} ${name} windows in the ledger, <b class="${over.length ? 'bad' : 'good'}">${over.length}</b> would have hit ${esc(before.name)}'s limit` + (over.length ? `, locking you out for about <b>${hrs(lock)}</b> in total.` : '.') + `</li>`;
-  });
-  const hitMax = D.windows.filter(w => w.plan === before.name && w.peak >= 95);
-  if (hitMax.length) h += `<li>While you were on ${esc(before.name)}, ${hitMax.length} window${hitMax.length > 1 ? 's' : ''} reached 95%+ (${hitMax.map(w => (w.kind === 'seven_day' ? '7d ' : '5h ') + w.peak + '% by ' + dstr(w.reset)).join(', ')}).</li>`;
-  h += `<li>Claude Code use over the last ${n0(mDays)} days works out to about <b>${usd(monthly)}</b> a month at API list prices (${loc(monthly * fx)})` + (after.price ? ` — <b>${n1(monthly * fx / after.price)}×</b> what ${esc(after.name)} costs you.` : '.') + `</li>`;
-  if (l7) h += `<li>Now: 7-day at <b>${l7[2]}%</b> (${100 - l7[2]}% left, resets ${esc(tstr(l7[3]))})` + (l5 && l5[3] > now ? `, 5-hour at <b>${l5[2]}%</b> (${100 - l5[2]}% left, resets ${esc(tstr(l5[3]))})` : '') + `.</li>`;
-  const irrF = (D.irr && D.irr.findings) || [];
-  const big = irrF.filter(f => f.sev !== 'info' && f.ts > now - 14 * DAYMS).length;
-  irrF.filter(f => f.sev === 'info').forEach(f => h += `<li>${esc(f.text)}</li>`);
-  h += `<li>${big ? `<span class="warn"><b>${big}</b> irregular stretch${big > 1 ? 'es' : ''} in the last 14 days</span> where the same use moved the % noticeably more or less than usual` : 'No irregular stretches in the last 14 days'} — see <a href="#irrCard">Irregularities</a>.</li>`;
-  h += `</ul><div class="mute">API-equivalent $ is what the same tokens would cost on the API at list prices (USD; ${D.currency} at ${D.fx} per USD). "1% of the limit" is learned by matching limit readings to the requests made between them, so it gets more accurate with more readings; claude.ai chat use counts against the limit but isn't in the ledger, which makes these estimates slightly generous. Plan prices and the exchange rate are set at the top of tools/usage-report.py.</div>`;
+    return `${kind === 'seven_day' ? '7-day' : '5-hour'} <b class="${over.length ? 'bad' : 'good'}">${over.length} of ${k.length}</b> windows` + (over.length ? ` (${hrs(lock)} locked out)` : '');
+  }).filter(Boolean);
+  if (fit.length && CUR > 0) h += `<li>On ${esc(before.name)} you'd have hit the limit in: ${fit.join(', ')}.</li>`;
+  h += `<li>At API prices you use about <b>${usd(monthly)}</b> a month (${loc(monthly * fx)})` + (after.price ? ` — <b>${n0(monthly * fx / after.price)}×</b> the plan price` : '') + `.</li>`;
+  h += `</ul><details class="mute"><summary>How these are worked out</summary>API-equivalent $ = the same tokens at API list prices (USD; ${D.currency} at ${D.fx}). "$ per 1%" is learned by matching limit readings to the requests between them, on every machine; claude.ai chat also uses the limit but isn't logged, so the estimates run slightly generous. "Points measured" = 7-day · 5-hour % points the readings rose by on that plan. Prices and exchange rate are at the top of tools/usage-report.py.</details>`;
   el.innerHTML = h;
 }
 
@@ -530,7 +605,7 @@ function drawIrr() {
   const fs = I.findings.filter(f => inF(f) && (sevShow === 'all' || f.sev === sevShow));
   let fh = '<div style="margin-bottom:6px">' + [['all', 'all'], ['high', 'big'], ['med', 'moderate'], ['info', 'patterns']].map(([k, l]) => `<button data-s="${k}" class="${sevShow === k ? 'on' : ''}">${l} (${cnt(k)})</button>`).join(' ') + '</div>';
   if (fs.length) {
-    fh += '<ul class="verdict" style="font-size:14px">' + fs.slice(0, 60).map(f => `<li><span class="pill ${f.sev === 'high' ? 'bad' : f.sev === 'med' ? 'warn' : ''}">${SEV[f.sev]}</span> ${esc(f.text)}</li>`).join('') + '</ul>';
+    fh += '<ul class="verdict" style="font-size:14px">' + fs.slice(0, 60).map(f => `<li title="${esc(f.why || '')}"><span class="pill ${f.sev === 'high' ? 'bad' : f.sev === 'med' ? 'warn' : ''}">${SEV[f.sev]}</span> ${esc(f.text)}</li>`).join('') + '</ul>';
     if (fs.length > 60) fh += `<div class="mute">and ${fs.length - 60} more in the table below</div>`;
   } else fh += '<div class="good">Nothing irregular in this range: the same use moved the % by about the same amount throughout.</div>';
   $('#findings').innerHTML = fh;
@@ -607,8 +682,8 @@ function render() {
 }
 
 $('#sub').textContent = `Built ${tstr(D.built)} from ${R.length.toLocaleString()} requests on ${D.hosts.length} machine${D.hosts.length > 1 ? 's' : ''} (${R.length ? dstr(R[0][TS]) + ' to ' + dstr(R[R.length - 1][TS]) : 'none'}), ${D.limits.length.toLocaleString()} limit readings. Run tools/usage-report.py again to refresh.`;
-initFilters(); verdict(); readFilters();
-let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 200); });
+initFilters(); drawNow(); verdict(); readFilters();
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { drawNow(); render(); }, 200); });
 </script>
 </body>
 </html>

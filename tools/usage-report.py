@@ -201,15 +201,20 @@ def plan_periods(limits, changes, args):
         periods = [{"name": PLAN_BEFORE, "from": 0, "to": up}, {"name": PLAN_AFTER, "from": up, "to": None}]
     else:
         periods = [{"name": (changes[-1][1] if changes else PLAN_AFTER) or PLAN_AFTER, "from": 0, "to": None}]
-    # later recorded changes (a downgrade, say) start new periods
+    # later recorded changes (a downgrade, say) start new periods. A row with no display name
+    # takes the name another row gave the same rate-limit tier; subscriptionType ("max") is not a
+    # plan name (Max and Ultra both report "max"), so a row that can't be named is skipped.
+    tier_name = {c[2]: c[1] for c in changes if c[1] and c[2]}
+    if up and changes and not tier_name:
+        tier_name[changes[-1][2]] = PLAN_AFTER
     for ch in changes:
-        name = ch[1] or ch[3]
+        name = ch[1] or tier_name.get(ch[2], "")
         if ch[0] > periods[-1]["from"] and name and name.lower() != periods[-1]["name"].lower():
             periods[-1]["to"] = ch[0]
             periods.append({"name": name, "from": ch[0], "to": None})
     for p in periods:
         p["price"] = prices.get(p["name"])
-        p["tier"] = next((c[2] for c in reversed(changes) if (c[1] or "").lower() == p["name"].lower()), "")
+        p["tier"] = next((c[2] for c in reversed(changes) if (c[1] or tier_name.get(c[2], "")).lower() == p["name"].lower()), "")
     return periods, up, bool(args.upgrade)
 
 
@@ -413,8 +418,8 @@ def irregularities(rows, step_list, periods, models):
     findings = []
     kname = {0: "5-hour", 1: "7-day"}
 
-    def fnd(ts, sev, text):
-        findings.append({"ts": ts, "sev": sev, "text": text})
+    def fnd(ts, sev, text, why=""):
+        findings.append({"ts": ts, "sev": sev, "text": text, "why": why})
 
     def mname(mi):
         return models[mi].replace("claude-", "") if 0 <= mi < len(models) else "?"
@@ -447,10 +452,11 @@ def irregularities(rows, step_list, periods, models):
                 why = "the same % took more tokens than usual, even allowing for the model mix: the limit counted this use more cheaply (time of day, cache weighting, or a bigger limit)"
             expected = c["usd"] / base
             c["why"] = why
+            short = ("almost nothing logged" if c["usd"] < 0.5 else
+                     "% rose faster than the tokens explain" if c["dev"] < 0 else "same % took more tokens than usual")
             fnd(c["t1"], "high" if abs(c["dev"]) >= 2 * FLAG else "med",
-                f"{local(c['t0']):%d %b %H:%M}–{local(c['t1']):%H:%M} ({kname[c['kind']]}): +{c['dp']}% for ${c['usd']:.2f} "
-                f"(${c['rate']:.2f} per 1% vs ${base:.2f} usual; these tokens should have moved it about {expected:.1f}%). "
-                f"Mostly {mname(top)}. {why[0].upper() + why[1:]}.")
+                f"{local(c['t0']):%d %b %H:%M}–{local(c['t1']):%H:%M} · {kname[c['kind']]} +{c['dp']}% for ${c['usd']:.0f} "
+                f"(${c['rate']:.2f}/1% vs ${base:.2f} usual, expected +{expected:.1f}%) · mostly {mname(top)} · {short}", why)
 
     # 2. per-model weight, per plan period and per week: % per $ of each model, by least squares
     fits = []
@@ -493,8 +499,7 @@ def irregularities(rows, step_list, periods, models):
                     if mm["solid"] and mm["per1"] and mm["share"] >= 0.03 and abs(mm["per1"] / pf["overall"] - 1) >= SHIFT:
                         more = mm["per1"] < pf["overall"]
                         fnd(p["from"] or (g[0]["t1"] if g else 0), "info",
-                            f"On {p['name']} ({kname[kind]}), {mm['name']} counts {'more' if more else 'less'} against your limit than its API price suggests: "
-                            f"${mm['per1']:.2f} of it per 1% vs ${pf['overall']:.2f} for your mix overall.")
+                            f"{mm['name']} costs {'more' if more else 'less'} limit than its API price: ${mm['per1']:.2f}/1% vs ${pf['overall']:.2f} for your mix ({p['name']}, {kname[kind]})")
             weeks = {}
             for c in g:
                 d = local(c["t1"])
@@ -512,8 +517,7 @@ def irregularities(rows, step_list, periods, models):
                     if before and abs(mm["per1"] / before[1] - 1) >= SHIFT:
                         up = mm["per1"] > before[1]
                         fnd(weeks[wk][-1]["t1"], "med",
-                            f"{mm['name']} ({kname[kind]}, {p['name']}): ${mm['per1']:.2f} per 1% in the week of {wk} vs ${before[1]:.2f} in the week of {before[0]} "
-                            f"— the same tokens now move the % {'less' if up else 'more'} ({abs(mm['per1'] / before[1] - 1) * 100:.0f}% {'cheaper' if up else 'dearer'}).")
+                            f"{mm['name']} week of {wk}: ${mm['per1']:.2f}/1% vs ${before[1]:.2f} the week of {before[0]} · {abs(mm['per1'] / before[1] - 1) * 100:.0f}% {'cheaper' if up else 'dearer'} ({p['name']}, {kname[kind]})")
                     last[mm["model"]] = (wk, mm["per1"])
 
     flag_chunks(pfits)
@@ -539,8 +543,7 @@ def irregularities(rows, step_list, periods, models):
             times.append({"kind": kind, "period": p["name"], "band": name, "chunks": len(cs), "per1": round(rate, 3), "vs": round(rate / overall - 1, 3)})
             if len(cs) >= 5 and abs(rate / overall - 1) >= FLAG:
                 fnd(g[-1]["t1"], "info",
-                    f"On {p['name']}, use in the {name} gets ${rate:.2f} per 1% of the {kname[kind]} limit vs ${overall:.2f} overall "
-                    f"({'cheaper' if rate > overall else 'dearer'} by {abs(rate / overall - 1) * 100:.0f}%, {len(cs)} measurements).")
+                    f"{name}: ${rate:.2f}/1% vs ${overall:.2f} overall · {abs(rate / overall - 1) * 100:.0f}% {'cheaper' if rate > overall else 'dearer'} ({p['name']}, {kname[kind]}, {len(cs)} measurements)")
 
     # 4. drift: the latest chunks against the rest of the same plan period
     for kind in (0, 1):
