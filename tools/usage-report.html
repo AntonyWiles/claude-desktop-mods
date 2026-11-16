@@ -61,7 +61,10 @@ details summary { cursor:pointer; margin-top:6px; }
     <h2 id="nowTitle">Now</h2>
     <div class="kpis" id="nowKpis"></div>
     <h2 style="margin-top:16px">Where the 7-day limit went <span class="mute" style="font-weight:400" id="nowUnit"></span></h2>
+    <div id="nowSplit" style="margin:2px 0 6px">Split by <button data-k="effort">model · effort</button> <button data-k="model">model</button></div>
     <div id="nowWin"></div>
+    <h2 style="margin-top:14px">Effort by model, last 7 days <span class="mute" style="font-weight:400">— limit points (share of that model's points) · API $</span></h2>
+    <div id="nowEff"></div>
     <div class="grid2" style="margin-top:14px">
       <div><h2>Last 24 hours, by hour</h2><div class="chart" id="now24"></div></div>
       <div><h2>Last 7 days, by day</h2><div class="chart" id="now7"></div></div>
@@ -264,6 +267,16 @@ const MCOL = (() => {
   return col;
 })();
 const mCol = m => MCOL[m] || '#999';
+// effort levels in order, each a shade of its model's colour (lighter = lower effort)
+const EFF_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFF_SHADE = { low: 0.5, medium: 0.28, high: 0, xhigh: -0.22, max: -0.4 };
+const effName = e => e < 0 ? 'default' : D.efforts[e];
+const effRank = name => { const k = EFF_ORDER.indexOf(name); return k < 0 ? (name === 'default' ? -1 : 99) : k; };
+const shade = (hex, f) => {
+  const n = parseInt(hex.slice(1), 16), c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.round(f >= 0 ? v + (255 - v) * f : v * (1 + f)));
+  return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+};
+let NOWSPLIT = 'effort';
 const ago = ms => { const h = ms / HOURMS; return h < 1 ? n0(h * 60) + ' min' : h < 48 ? n1(h) + ' h' : n1(h / 24) + ' days'; };
 function measured7(a, b) { // 7-day % points the readings rose in [a, b), in points of the current plan
   let v = 0; const c = per1(CUR, 'seven_day');
@@ -293,22 +306,33 @@ function drawNow() {
   $('#nowUnit').textContent = `— % points the 7-day readings rose (in ${cur.name} points), split by each model's share of the tokens`;
 
   // a span's model split: measured points shared out by token weight; points with no logged use = "unlogged"
+  // keys: model index, or "model|effort" when split by effort; -1 = unlogged
+  const byEff = NOWSPLIT === 'effort';
+  const keyOf = r => byEff ? r[MO] + '|' + r[EF] : r[MO];
   const split = (a, b) => {
-    const m = new Map(); let est = 0, u = 0;
-    for (let i = lowerBound(a); i < R.length && R[i][TS] < b; i++) { const p = ptsOf(i); est += p; u += R[i][USD]; m.set(R[i][MO], (m.get(R[i][MO]) || 0) + p); }
+    const m = new Map(), usdK = new Map(); let est = 0, u = 0;
+    for (let i = lowerBound(a); i < R.length && R[i][TS] < b; i++) { const p = ptsOf(i), k = keyOf(R[i]); est += p; u += R[i][USD]; m.set(k, (m.get(k) || 0) + p); usdK.set(k, (usdK.get(k) || 0) + R[i][USD]); }
     const rd = measured7(a, b), out = new Map();
-    if (est) m.forEach((v, mo) => out.set(mo, rd * v / est)); else if (rd) out.set(-1, rd);
-    return { out, rd, est, u };
+    if (est) m.forEach((v, k) => out.set(k, rd * v / est)); else if (rd) out.set(-1, rd);
+    return { out, rd, est, u, usdK };
   };
-  const nameOf = mo => mo < 0 ? 'unlogged' : mShort(mo), colOf = mo => mo < 0 ? '#777' : mCol(mo);
+  const parse = k => { if (k === -1) return [-1, -1]; if (typeof k === 'number') return [k, null]; const [mo, ef] = k.split('|').map(Number); return [mo, ef]; };
+  const nameOf = k => { const [mo, ef] = parse(k); return mo < 0 ? 'unlogged' : mShort(mo) + (ef == null ? '' : ' · ' + effName(ef)); };
+  const colOf = k => { const [mo, ef] = parse(k); if (mo < 0) return '#777'; if (ef == null) return mCol(mo); const e = effName(ef); return shade(mCol(mo), e in EFF_SHADE ? EFF_SHADE[e] : 0.14); };
+  // order: by model weight, then effort low → max, so shades of one model sit together
+  const orderKeys = tot => {
+    const mt = new Map(); tot.forEach((v, k) => { const mo = parse(k)[0]; mt.set(mo, (mt.get(mo) || 0) + v); });
+    return [...tot.keys()].sort((x, y) => { const [ma, ea] = parse(x), [mb, eb] = parse(y); return ma !== mb ? (mt.get(mb) - mt.get(ma)) : effRank(effName(ea ?? -1)) - effRank(effName(eb ?? -1)); });
+  };
+  $('#nowSplit').querySelectorAll('button').forEach(b => { b.classList.toggle('on', b.dataset.k === NOWSPLIT); b.onclick = () => { NOWSPLIT = b.dataset.k; drawNow(); }; });
 
   // windows: 100%-stacked bar of the model mix, with the totals
   const wins = [['3 h', 3], ['6 h', 6], ['12 h', 12], ['24 h', 24], ['7 days', 168]];
   let h = `<table class="win"><thead><tr><th></th><th class="l mute">model split</th><th>points</th><th class="mute">from tokens</th><th class="mute">API $</th><th class="mute">$ per point</th></tr></thead><tbody>`;
   for (const [name, hh] of wins) {
     const { out, rd, est, u } = split(now - hh * HOURMS, now);
-    const parts = [...out.entries()].filter(e => e[1] > 0).sort((x, y) => y[1] - x[1]);
-    const bar = rd ? parts.map(([mo, v]) => { const pc = v / rd * 100; return `<i style="width:${pc}%;background:${colOf(mo)}" title="${esc(nameOf(mo))}: ${n1(v)} pts (${n0(pc)}%)">${pc >= 9 ? esc(nameOf(mo)) + ' ' + n1(v) : ''}</i>`; }).join('') : `<span class="mute">${u ? 'no change in the readings yet' : 'nothing ran'}</span>`;
+    const parts = orderKeys(out).map(k => [k, out.get(k)]).filter(e => e[1] > 0);
+    const bar = rd ? parts.map(([k, v]) => { const pc = v / rd * 100, nm = nameOf(k); return `<i style="width:${pc}%;background:${colOf(k)}" title="${esc(nm)}: ${n1(v)} pts (${n0(pc)}%)">${pc >= nm.length * 0.6 + 3 ? esc(nm) + ' ' + n1(v) : ''}</i>`; }).join('') : `<span class="mute">${u ? 'no change in the readings yet' : 'nothing ran'}</span>`;
     const pp = rd ? u / rd : null, off = pp && avg ? pp / avg : 1;
     h += `<tr><th class="l">${name}</th><td class="wbar">${bar}</td><td><b>${n0(rd)}</b></td><td class="mute">≈${n1(est)}</td><td class="mute">${usd(u)}</td>` +
       `<td class="${off < 0.6 ? 'bad' : off > 1.6 ? 'good' : 'mute'}">${pp ? usd(pp) : '–'}</td></tr>`;
@@ -323,13 +347,31 @@ function drawNow() {
       const s = split(a + j * step, a + (j + 1) * step); cells.push(s.out); info.push(s);
       s.out.forEach((v, mo) => ms.set(mo, (ms.get(mo) || 0) + v));
     }
-    const series = [...ms.entries()].sort((x, y) => y[1] - x[1]).map(([mo]) => ({ name: nameOf(mo), color: colOf(mo), values: cells.map(c => c.get(mo) || 0) }));
+    const series = orderKeys(ms).map(k => ({ name: nameOf(k), color: colOf(k), values: cells.map(c => c.get(k) || 0) }));
     barChart(el, labels, series, { fmt: v => n1(v) + ' pts', h: 210, extra: j => `<br><span class="mute">${usd(info[j].u)} API · ≈${n1(info[j].est)} pts from tokens</span>` });
   };
   const hr = new Date(now); hr.setMinutes(0, 0, 0);
   stack($('#now24'), hr.getTime() - 23 * HOURMS, HOURMS, 24, t => pad(new Date(t).getHours()) + ':00');
   const dy = new Date(now); dy.setHours(0, 0, 0, 0);
   stack($('#now7'), dy.getTime() - 6 * DAYMS, DAYMS, 7, t => new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }));
+
+  // effort by model over the last 7 days: points (share of the model's points) and API $
+  const ep = new Map(), eu = new Map(), mods = new Map(), effs = new Set(); let est = 0;
+  for (let i = lowerBound(now - 7 * DAYMS); i < R.length; i++) {
+    const r = R[i], p = ptsOf(i), e = effName(r[EF]), k = r[MO] + '|' + e; est += p; effs.add(e);
+    ep.set(k, (ep.get(k) || 0) + p); eu.set(k, (eu.get(k) || 0) + r[USD]); mods.set(r[MO], (mods.get(r[MO]) || 0) + p);
+  }
+  const rd7 = measured7(now - 7 * DAYMS, now), sc = est ? rd7 / est : 0;
+  const ecols = [...effs].sort((a, b) => effRank(a) - effRank(b)), mrows = [...mods.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]);
+  const cell = (pts, tot, $u, col) => pts || $u ? `<td><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${col}"></i> <b>${n1(pts * sc)}</b> <span class="mute">(${n0(tot ? pts / tot * 100 : 0)}%) · ${usd($u)}</span></td>` : '<td class="mute">–</td>';
+  let t = `<table><thead><tr><th class="l">model</th>${ecols.map(e => `<th>${esc(e)}</th>`).join('')}<th>total</th></tr></thead><tbody>`;
+  for (const mo of mrows) {
+    const tot = mods.get(mo); let tu = 0;
+    t += `<tr><td class="l"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${mCol(mo)}"></i> ${esc(mShort(mo))}</td>` + ecols.map(e => { const k = mo + '|' + e; tu += eu.get(k) || 0; return cell(ep.get(k) || 0, tot, eu.get(k) || 0, shade(mCol(mo), e in EFF_SHADE ? EFF_SHADE[e] : 0.14)); }).join('') + `<td><b>${n1(tot * sc)}</b> <span class="mute">· ${usd(tu)}</span></td></tr>`;
+  }
+  const allE = e => { let p = 0, u = 0; for (const mo of mrows) { p += ep.get(mo + '|' + e) || 0; u += eu.get(mo + '|' + e) || 0; } return [p, u]; };
+  t += `<tr><td class="l"><b>all models</b></td>` + ecols.map(e => { const [p, u] = allE(e); return cell(p, est, u, 'var(--mute)'); }).join('') + `<td><b>${n1(rd7)}</b></td></tr>`;
+  $('#nowEff').innerHTML = mrows.length ? t + '</tbody></table><div class="mute" style="margin-top:4px">Points are the measured 7-day rise shared out by each request\'s token weight, so they add up to the measured total. "default" = no effort level was recorded on the request.</div>' : '<div class="mute">Nothing ran in the last 7 days.</div>';
 }
 
 // ---------------------------------------------------------------- the plan check (all data, not the filters)
